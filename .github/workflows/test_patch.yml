@@ -12,48 +12,318 @@ permissions:
 jobs:
   test:
     runs-on: ubuntu-22.04
-    timeout-minutes: 240
     container:
       image: ghcr.io/aicodinggym/problemset-docker/${{ github.ref_name }}:latest
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
+    timeout-minutes: 240
     env:
       INSTANCE_ID: "matplotlib__matplotlib-23299"
       REPO: "matplotlib/matplotlib"
       VERSION: "3.5"
       BASE_COMMIT: "3eadeacc06c9f2ddcdac6ae39819faa9fbee9e39"
       ENV_SETUP_COMMIT: "de98877e3dc45de8dd441d008f23d88738dc015d"
-      TEST_CMD: "pytest -rA"
-      TEST_FILES: "lib/matplotlib/tests/test_rcparams.py"
+      TEST_CMD: 'pytest -rA'
+      TEST_FILES: 'lib/matplotlib/tests/test_rcparams.py'
       CONDA_ENV: "testbed"
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          fetch-tags: false
 
-      - name: Setup and run tests
-        shell: bash
+      - name: Git Safe Directory
+        shell: "bash -l {0}"
         run: |
-          set +e
-          git config --global --add safe.directory $GITHUB_WORKSPACE
+          set -euo pipefail
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
 
-          # Activate conda environment
-          source /opt/conda/etc/profile.d/conda.sh
-          conda activate testbed
-
-          # Install repo in editable mode (fast — deps already cached in image)
-          pip install -e . 2>/dev/null || python setup.py develop 2>/dev/null || true
-
-          # Run FAIL_TO_PASS and PASS_TO_PASS tests
-          if [ -f .swebench/run_script.sh ]; then
-            chmod +x .swebench/run_script.sh
-            bash .swebench/run_script.sh $TEST_FILES
-            TEST_EXIT=$?
-          else
-            pytest -rA $TEST_FILES
-            TEST_EXIT=$?
+      - name: Checkout Trigger Commit
+        shell: "bash -l {0}"
+        run: |
+          set -euo pipefail
+          if ! git cat-file -e "$BASE_COMMIT^{commit}" 2>/dev/null; then
+            git fetch --depth=1 "https://github.com/$REPO.git" "$BASE_COMMIT" || true
           fi
+          if ! git cat-file -e "$GITHUB_SHA^{commit}" 2>/dev/null; then
+            git fetch --depth=1 "https://github.com/$REPO.git" "$GITHUB_SHA" || true
+          fi
+          git checkout "$GITHUB_SHA"
 
-          echo "TEST_EXIT=$TEST_EXIT" >> "$GITHUB_ENV"
-          echo "test_exit=$TEST_EXIT" >> "$GITHUB_OUTPUT"
-          exit $TEST_EXIT
+      - name: Cache build artifacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            build/
+            **/*.so
+          key: build-${{ hashFiles('**/*.pyx', '**/*.c', '**/*.h') }}
+          restore-keys: build-
+
+      - name: Install Repo
+        shell: "bash -l {0}"
+        run: |
+          set -euo pipefail
+          source "$(conda info --base)/etc/profile.d/conda.sh"
+          conda activate "$CONDA_ENV"
+          git fetch --tags "https://github.com/$REPO.git" || true
+          TARGET_TIMESTAMP=$(git show -s --format=%ci "$BASE_COMMIT")
+          git tag -l | while read tag; do TAG_COMMIT=$(git rev-list -n 1 "$tag"); TAG_TIME=$(git show -s --format=%ci "$TAG_COMMIT"); if [[ "$TAG_TIME" > "$TARGET_TIMESTAMP" ]]; then git tag -d "$tag"; fi; done
+          sudo apt-get -y update && sudo apt-get -y upgrade && DEBIAN_FRONTEND=noninteractive sudo apt-get install -y imagemagick ffmpeg texlive texlive-latex-extra texlive-fonts-recommended texlive-xetex texlive-luatex cm-super dvipng
+          QHULL_URL="http://www.qhull.org/download/qhull-2020-src-8.0.2.tgz"
+          QHULL_TAR="/tmp/qhull-2020-src-8.0.2.tgz"
+          QHULL_BUILD_DIR="$GITHUB_WORKSPACE/build"
+          wget -O "$QHULL_TAR" "$QHULL_URL"
+          mkdir -p "$QHULL_BUILD_DIR"
+          tar -xvzf "$QHULL_TAR" -C "$QHULL_BUILD_DIR"
+          python -m pip install -e .
+
+      - name: Apply Test Patch
+        shell: "bash -l {0}"
+        run: |
+          set -euo pipefail
+          git apply --verbose --reject - <<'PATCH_EOF'
+          diff --git a/lib/matplotlib/tests/test_rcparams.py b/lib/matplotlib/tests/test_rcparams.py
+          --- a/lib/matplotlib/tests/test_rcparams.py
+          +++ b/lib/matplotlib/tests/test_rcparams.py
+          @@ -496,6 +496,13 @@ def test_keymaps():
+                   assert isinstance(mpl.rcParams[k], list)
+           
+           
+          +def test_no_backend_reset_rccontext():
+          +    assert mpl.rcParams['backend'] != 'module://aardvark'
+          +    with mpl.rc_context():
+          +        mpl.rcParams['backend'] = 'module://aardvark'
+          +    assert mpl.rcParams['backend'] == 'module://aardvark'
+          +
+          +
+           def test_rcparams_reset_after_fail():
+               # There was previously a bug that meant that if rc_context failed and
+               # raised an exception due to issues in the supplied rc parameters, the
+          PATCH_EOF
+
+      - name: Run Tests
+        shell: "bash -l {0}"
+        run: |
+          set -euo pipefail
+          source "$(conda info --base)/etc/profile.d/conda.sh"
+          conda activate "$CONDA_ENV"
+          FAIL_TO_PASS_PATH=/tmp/fail_to_pass.json
+          PASS_TO_PASS_PATH=/tmp/pass_to_pass.json
+          TEST_DIRECTIVES_PATH=/tmp/test_directives.json
+          TEST_RESULTS_PATH=/tmp/test_results.txt
+          cat <<'FAIL_EOF' > "$FAIL_TO_PASS_PATH"
+          [
+            "lib/matplotlib/tests/test_rcparams.py::test_no_backend_reset_rccontext"
+          ]
+          FAIL_EOF
+          cat <<'PASS_EOF' > "$PASS_TO_PASS_PATH"
+          [
+            "lib/matplotlib/tests/test_rcparams.py::test_rcparams",
+            "lib/matplotlib/tests/test_rcparams.py::test_RcParams_class",
+            "lib/matplotlib/tests/test_rcparams.py::test_Bug_2543",
+            "lib/matplotlib/tests/test_rcparams.py::test_legend_colors[same",
+            "lib/matplotlib/tests/test_rcparams.py::test_legend_colors[inherited",
+            "lib/matplotlib/tests/test_rcparams.py::test_legend_colors[different",
+            "lib/matplotlib/tests/test_rcparams.py::test_mfc_rcparams",
+            "lib/matplotlib/tests/test_rcparams.py::test_mec_rcparams",
+            "lib/matplotlib/tests/test_rcparams.py::test_axes_titlecolor_rcparams",
+            "lib/matplotlib/tests/test_rcparams.py::test_Issue_1713",
+            "lib/matplotlib/tests/test_rcparams.py::test_animation_frame_formats",
+            "lib/matplotlib/tests/test_rcparams.py::test_validator_valid[validate_bool-t-True]",
+            "lib/matplotlib/tests/test_rcparams.py::test_validator_valid[validate_bool-y-True]",
+            "lib/matplotlib/tests/test_rcparams.py::test_validator_valid[validate_bool-yes-True]",
+            "lib/matplotlib/tests/test_rcparams.py::test_validator_valid[validate_bool-on-True]",
+            "lib/matplotlib/tests/test_rcparams.py::test_validator_valid[validate_bool-true-True]",
+            "lib/matplotlib/tests/test_rcparams.py::test_validator_valid[validate_bool-1-True0]",
+            "lib/matplotlib/tests/test_rcparams.py::test_validator_valid[validate_bool-1-True1]",
+            "lib/matplotlib/tests/test_rcparams.py::test_validator_valid[validate_bool-True-True]",
+            "lib/matplotlib/tests/test_rcparams.py::test_validator_valid[validate_bool-f-False]",
+            "lib/matplotlib/tests/test_rcparams.py::test_validator_valid[validate_bool-n-False]",
+            "lib/matplotlib/tests/test_rcparams.py::test_validator_valid[validate_bool-no-False]",
+            "lib/matplotlib/tests/test_rcparams.py::test_validator_valid[validate_bool-off-False]",
+            "lib/matplotlib/tests/test_rcparams.py::test_validator_valid[validate_bool-false-False]",
+            "lib/matplotlib/tests/test_rcparams.py::test_validator_valid[validate_bool-0-False0]",
+            "lib/matplotlib/tests/test_rcparams.py::test_validator_valid[validate_bool-0-False1]",
+            "lib/matplotlib/tests/test_rcparams.py::test_validator_valid[validate_bool-False-False]",
+            "lib/matplotlib/tests/test_rcparams.py::test_validator_valid[validate_strlist--target16]",
+            "lib/matplotlib/tests/test_rcparams.py::test_validator_valid[validate_strlist-a,b-target17]",
+            "lib/matplotlib/tests/test_rcparams.py::test_validator_valid[validate_strlist-aardvark-target18]",
+            "lib/matplotlib/tests/test_rcparams.py::test_validator_valid[validate_strlist-aardvark,",
+            "lib/matplotlib/tests/test_rcparams.py::test_validator_valid[validate_strlist-arg21-target21]",
+            "lib/matplotlib/tests/test_rcparams.py::test_validator_valid[validate_strlist-arg22-target22]",
+            "lib/matplotlib/tests/test_rcparams.py::test_validator_valid[validate_strlist-arg23-target23]",
+            "lib/matplotlib/tests/test_rcparams.py::test_validator_valid[validate_strlist-arg24-target24]",
+            "lib/matplotlib/tests/test_rcparams.py::test_validator_valid[validate_intlist-1,",
+            "lib/matplotlib/tests/test_rcparams.py::test_validator_valid[validate_intlist-arg26-target26]",
+            "lib/matplotlib/tests/test_rcparams.py::test_validator_valid[validate_intlist-arg27-target27]",
+            "lib/matplotlib/tests/test_rcparams.py::test_validator_valid[validate_intlist-arg28-target28]",
+            "lib/matplotlib/tests/test_rcparams.py::test_validator_valid[validate_intlist-arg29-target29]",
+            "lib/matplotlib/tests/test_rcparams.py::test_validator_valid[validate_floatlist-1.5,",
+            "lib/matplotlib/tests/test_rcparams.py::test_validator_valid[validate_floatlist-arg31-target31]",
+            "lib/matplotlib/tests/test_rcparams.py::test_validator_valid[validate_floatlist-arg32-target32]",
+            "lib/matplotlib/tests/test_rcparams.py::test_validator_valid[validate_floatlist-arg33-target33]",
+            "lib/matplotlib/tests/test_rcparams.py::test_validator_valid[validate_floatlist-arg34-target34]",
+            "lib/matplotlib/tests/test_rcparams.py::test_validator_valid[validate_cycler-cycler(\"color\",",
+            "lib/matplotlib/tests/test_rcparams.py::test_validator_valid[validate_cycler-arg36-target36]",
+            "lib/matplotlib/tests/test_rcparams.py::test_validator_valid[validate_cycler-(cycler(\"color\",",
+            "lib/matplotlib/tests/test_rcparams.py::test_validator_valid[validate_cycler-cycler(c='rgb',",
+            "lib/matplotlib/tests/test_rcparams.py::test_validator_valid[validate_cycler-cycler('c',",
+            "lib/matplotlib/tests/test_rcparams.py::test_validator_valid[validate_cycler-arg40-target40]",
+            "lib/matplotlib/tests/test_rcparams.py::test_validator_valid[validate_cycler-arg41-target41]",
+            "lib/matplotlib/tests/test_rcparams.py::test_validator_valid[validate_hatch---|---|]",
+            "lib/matplotlib/tests/test_rcparams.py::test_validator_valid[validate_hatch-\\\\oO-\\\\oO]",
+            "lib/matplotlib/tests/test_rcparams.py::test_validator_valid[validate_hatch-/+*/.x-/+*/.x]",
+            "lib/matplotlib/tests/test_rcparams.py::test_validator_valid[validate_hatch--]",
+            "lib/matplotlib/tests/test_rcparams.py::test_validator_valid[validate_colorlist-r,g,b-target46]",
+            "lib/matplotlib/tests/test_rcparams.py::test_validator_valid[validate_colorlist-arg47-target47]",
+            "lib/matplotlib/tests/test_rcparams.py::test_validator_valid[validate_colorlist-r,",
+            "lib/matplotlib/tests/test_rcparams.py::test_validator_valid[validate_colorlist-arg49-target49]",
+            "lib/matplotlib/tests/test_rcparams.py::test_validator_valid[validate_colorlist-arg50-target50]",
+            "lib/matplotlib/tests/test_rcparams.py::test_validator_valid[validate_colorlist-arg51-target51]",
+            "lib/matplotlib/tests/test_rcparams.py::test_validator_valid[validate_color-None-none]",
+            "lib/matplotlib/tests/test_rcparams.py::test_validator_valid[validate_color-none-none]",
+            "lib/matplotlib/tests/test_rcparams.py::test_validator_valid[validate_color-AABBCC-#AABBCC]",
+            "lib/matplotlib/tests/test_rcparams.py::test_validator_valid[validate_color-AABBCC00-#AABBCC00]",
+            "lib/matplotlib/tests/test_rcparams.py::test_validator_valid[validate_color-tab:blue-tab:blue]",
+            "lib/matplotlib/tests/test_rcparams.py::test_validator_valid[validate_color-C12-C12]",
+            "lib/matplotlib/tests/test_rcparams.py::test_validator_valid[validate_color-(0,",
+            "lib/matplotlib/tests/test_rcparams.py::test_validator_valid[validate_color-arg59-target59]",
+            "lib/matplotlib/tests/test_rcparams.py::test_validator_valid[validate_color-arg61-target61]",
+            "lib/matplotlib/tests/test_rcparams.py::test_validator_valid[_validate_color_or_linecolor-linecolor-linecolor]",
+            "lib/matplotlib/tests/test_rcparams.py::test_validator_valid[_validate_color_or_linecolor-markerfacecolor-markerfacecolor]",
+            "lib/matplotlib/tests/test_rcparams.py::test_validator_valid[_validate_color_or_linecolor-mfc-markerfacecolor]",
+            "lib/matplotlib/tests/test_rcparams.py::test_validator_valid[_validate_color_or_linecolor-markeredgecolor-markeredgecolor]",
+            "lib/matplotlib/tests/test_rcparams.py::test_validator_valid[_validate_color_or_linecolor-mec-markeredgecolor]",
+            "lib/matplotlib/tests/test_rcparams.py::test_validator_valid[validate_hist_bins-auto-auto]",
+            "lib/matplotlib/tests/test_rcparams.py::test_validator_valid[validate_hist_bins-fd-fd]",
+            "lib/matplotlib/tests/test_rcparams.py::test_validator_valid[validate_hist_bins-10-10]",
+            "lib/matplotlib/tests/test_rcparams.py::test_validator_valid[validate_hist_bins-1,",
+            "lib/matplotlib/tests/test_rcparams.py::test_validator_valid[validate_hist_bins-arg71-target71]",
+            "lib/matplotlib/tests/test_rcparams.py::test_validator_valid[validate_hist_bins-arg72-target72]",
+            "lib/matplotlib/tests/test_rcparams.py::test_validator_valid[validate_markevery-None-None]",
+            "lib/matplotlib/tests/test_rcparams.py::test_validator_valid[validate_markevery-1-1]",
+            "lib/matplotlib/tests/test_rcparams.py::test_validator_valid[validate_markevery-0.1-0.1]",
+            "lib/matplotlib/tests/test_rcparams.py::test_validator_valid[validate_markevery-arg76-target76]",
+            "lib/matplotlib/tests/test_rcparams.py::test_validator_valid[validate_markevery-arg77-target77]",
+            "lib/matplotlib/tests/test_rcparams.py::test_validator_valid[validate_markevery-arg78-target78]",
+            "lib/matplotlib/tests/test_rcparams.py::test_validator_valid[validate_markevery-arg79-target79]",
+            "lib/matplotlib/tests/test_rcparams.py::test_validator_valid[validate_markevery-arg80-target80]",
+            "lib/matplotlib/tests/test_rcparams.py::test_validator_valid[_validate_linestyle----]",
+            "lib/matplotlib/tests/test_rcparams.py::test_validator_valid[_validate_linestyle-solid-solid]",
+            "lib/matplotlib/tests/test_rcparams.py::test_validator_valid[_validate_linestyle------]",
+            "lib/matplotlib/tests/test_rcparams.py::test_validator_valid[_validate_linestyle-dashed-dashed]",
+            "lib/matplotlib/tests/test_rcparams.py::test_validator_valid[_validate_linestyle--.--.]",
+            "lib/matplotlib/tests/test_rcparams.py::test_validator_valid[_validate_linestyle-dashdot-dashdot]",
+            "lib/matplotlib/tests/test_rcparams.py::test_validator_valid[_validate_linestyle-:-:]",
+            "lib/matplotlib/tests/test_rcparams.py::test_validator_valid[_validate_linestyle-dotted-dotted]",
+            "lib/matplotlib/tests/test_rcparams.py::test_validator_valid[_validate_linestyle--]",
+            "lib/matplotlib/tests/test_rcparams.py::test_validator_valid[_validate_linestyle-",
+            "lib/matplotlib/tests/test_rcparams.py::test_validator_valid[_validate_linestyle-None-none]",
+            "lib/matplotlib/tests/test_rcparams.py::test_validator_valid[_validate_linestyle-none-none]",
+            "lib/matplotlib/tests/test_rcparams.py::test_validator_valid[_validate_linestyle-DoTtEd-dotted]",
+            "lib/matplotlib/tests/test_rcparams.py::test_validator_valid[_validate_linestyle-1,",
+            "lib/matplotlib/tests/test_rcparams.py::test_validator_valid[_validate_linestyle-arg95-target95]",
+            "lib/matplotlib/tests/test_rcparams.py::test_validator_valid[_validate_linestyle-arg96-target96]",
+            "lib/matplotlib/tests/test_rcparams.py::test_validator_valid[_validate_linestyle-arg97-target97]",
+            "lib/matplotlib/tests/test_rcparams.py::test_validator_valid[_validate_linestyle-arg98-target98]",
+            "lib/matplotlib/tests/test_rcparams.py::test_validator_invalid[validate_bool-aardvark-ValueError]",
+            "lib/matplotlib/tests/test_rcparams.py::test_validator_invalid[validate_bool-2-ValueError]",
+            "lib/matplotlib/tests/test_rcparams.py::test_validator_invalid[validate_bool--1-ValueError]",
+            "lib/matplotlib/tests/test_rcparams.py::test_validator_invalid[validate_bool-arg3-ValueError]",
+            "lib/matplotlib/tests/test_rcparams.py::test_validator_invalid[validate_strlist-arg4-ValueError]",
+            "lib/matplotlib/tests/test_rcparams.py::test_validator_invalid[validate_strlist-1-ValueError]",
+            "lib/matplotlib/tests/test_rcparams.py::test_validator_invalid[validate_strlist-arg6-MatplotlibDeprecationWarning]",
+            "lib/matplotlib/tests/test_rcparams.py::test_validator_invalid[validate_strlist-arg7-MatplotlibDeprecationWarning]",
+            "lib/matplotlib/tests/test_rcparams.py::test_validator_invalid[validate_intlist-aardvark-ValueError]",
+            "lib/matplotlib/tests/test_rcparams.py::test_validator_invalid[validate_intlist-arg9-ValueError]",
+            "lib/matplotlib/tests/test_rcparams.py::test_validator_invalid[validate_intlist-arg10-ValueError]",
+            "lib/matplotlib/tests/test_rcparams.py::test_validator_invalid[validate_floatlist-aardvark-ValueError]",
+            "lib/matplotlib/tests/test_rcparams.py::test_validator_invalid[validate_floatlist-arg12-ValueError]",
+            "lib/matplotlib/tests/test_rcparams.py::test_validator_invalid[validate_floatlist-arg13-ValueError]",
+            "lib/matplotlib/tests/test_rcparams.py::test_validator_invalid[validate_floatlist-arg14-ValueError]",
+            "lib/matplotlib/tests/test_rcparams.py::test_validator_invalid[validate_floatlist-None-ValueError]",
+            "lib/matplotlib/tests/test_rcparams.py::test_validator_invalid[validate_cycler-4-ValueError]",
+            "lib/matplotlib/tests/test_rcparams.py::test_validator_invalid[validate_cycler-cycler(\"bleh,",
+            "lib/matplotlib/tests/test_rcparams.py::test_validator_invalid[validate_cycler-Cycler(\"linewidth\",",
+            "lib/matplotlib/tests/test_rcparams.py::test_validator_invalid[validate_cycler-cycler('c',",
+            "lib/matplotlib/tests/test_rcparams.py::test_validator_invalid[validate_cycler-1",
+            "lib/matplotlib/tests/test_rcparams.py::test_validator_invalid[validate_cycler-os.system(\"echo",
+            "lib/matplotlib/tests/test_rcparams.py::test_validator_invalid[validate_cycler-import",
+            "lib/matplotlib/tests/test_rcparams.py::test_validator_invalid[validate_cycler-def",
+            "lib/matplotlib/tests/test_rcparams.py::test_validator_invalid[validate_cycler-cycler(\"waka\",",
+            "lib/matplotlib/tests/test_rcparams.py::test_validator_invalid[validate_cycler-cycler(c=[1,",
+            "lib/matplotlib/tests/test_rcparams.py::test_validator_invalid[validate_cycler-cycler(lw=['a',",
+            "lib/matplotlib/tests/test_rcparams.py::test_validator_invalid[validate_cycler-arg31-ValueError]",
+            "lib/matplotlib/tests/test_rcparams.py::test_validator_invalid[validate_cycler-arg32-ValueError]",
+            "lib/matplotlib/tests/test_rcparams.py::test_validator_invalid[validate_hatch---_-ValueError]",
+            "lib/matplotlib/tests/test_rcparams.py::test_validator_invalid[validate_hatch-8-ValueError]",
+            "lib/matplotlib/tests/test_rcparams.py::test_validator_invalid[validate_hatch-X-ValueError]",
+            "lib/matplotlib/tests/test_rcparams.py::test_validator_invalid[validate_colorlist-fish-ValueError]",
+            "lib/matplotlib/tests/test_rcparams.py::test_validator_invalid[validate_color-tab:veryblue-ValueError]",
+            "lib/matplotlib/tests/test_rcparams.py::test_validator_invalid[validate_color-(0,",
+            "lib/matplotlib/tests/test_rcparams.py::test_validator_invalid[_validate_color_or_linecolor-line-ValueError]",
+            "lib/matplotlib/tests/test_rcparams.py::test_validator_invalid[_validate_color_or_linecolor-marker-ValueError]",
+            "lib/matplotlib/tests/test_rcparams.py::test_validator_invalid[validate_hist_bins-aardvark-ValueError]",
+            "lib/matplotlib/tests/test_rcparams.py::test_validator_invalid[validate_markevery-arg45-TypeError]",
+            "lib/matplotlib/tests/test_rcparams.py::test_validator_invalid[validate_markevery-arg46-TypeError]",
+            "lib/matplotlib/tests/test_rcparams.py::test_validator_invalid[validate_markevery-arg47-TypeError]",
+            "lib/matplotlib/tests/test_rcparams.py::test_validator_invalid[validate_markevery-arg48-TypeError]",
+            "lib/matplotlib/tests/test_rcparams.py::test_validator_invalid[validate_markevery-arg49-TypeError]",
+            "lib/matplotlib/tests/test_rcparams.py::test_validator_invalid[validate_markevery-arg50-TypeError]",
+            "lib/matplotlib/tests/test_rcparams.py::test_validator_invalid[validate_markevery-arg51-TypeError]",
+            "lib/matplotlib/tests/test_rcparams.py::test_validator_invalid[validate_markevery-arg52-TypeError]",
+            "lib/matplotlib/tests/test_rcparams.py::test_validator_invalid[validate_markevery-arg53-TypeError]",
+            "lib/matplotlib/tests/test_rcparams.py::test_validator_invalid[validate_markevery-abc-TypeError0]",
+            "lib/matplotlib/tests/test_rcparams.py::test_validator_invalid[validate_markevery-arg55-TypeError]",
+            "lib/matplotlib/tests/test_rcparams.py::test_validator_invalid[validate_markevery-arg56-TypeError]",
+            "lib/matplotlib/tests/test_rcparams.py::test_validator_invalid[validate_markevery-arg57-TypeError]",
+            "lib/matplotlib/tests/test_rcparams.py::test_validator_invalid[validate_markevery-arg58-TypeError]",
+            "lib/matplotlib/tests/test_rcparams.py::test_validator_invalid[validate_markevery-abc-TypeError1]",
+            "lib/matplotlib/tests/test_rcparams.py::test_validator_invalid[validate_markevery-a-TypeError]",
+            "lib/matplotlib/tests/test_rcparams.py::test_validator_invalid[validate_markevery-arg61-TypeError]",
+            "lib/matplotlib/tests/test_rcparams.py::test_validator_invalid[_validate_linestyle-aardvark-ValueError]",
+            "lib/matplotlib/tests/test_rcparams.py::test_validator_invalid[_validate_linestyle-dotted-ValueError]",
+            "lib/matplotlib/tests/test_rcparams.py::test_validator_invalid[_validate_linestyle-\\xff\\xfed\\x00o\\x00t\\x00t\\x00e\\x00d\\x00-ValueError]",
+            "lib/matplotlib/tests/test_rcparams.py::test_validator_invalid[_validate_linestyle-arg65-ValueError]",
+            "lib/matplotlib/tests/test_rcparams.py::test_validator_invalid[_validate_linestyle-1.23-ValueError]",
+            "lib/matplotlib/tests/test_rcparams.py::test_validator_invalid[_validate_linestyle-arg67-ValueError]",
+            "lib/matplotlib/tests/test_rcparams.py::test_validator_invalid[_validate_linestyle-arg68-ValueError]",
+            "lib/matplotlib/tests/test_rcparams.py::test_validator_invalid[_validate_linestyle-arg69-ValueError]",
+            "lib/matplotlib/tests/test_rcparams.py::test_validator_invalid[_validate_linestyle-arg70-ValueError]",
+            "lib/matplotlib/tests/test_rcparams.py::test_validate_fontweight[bold-bold]",
+            "lib/matplotlib/tests/test_rcparams.py::test_validate_fontweight[BOLD-ValueError]",
+            "lib/matplotlib/tests/test_rcparams.py::test_validate_fontweight[100-100_0]",
+            "lib/matplotlib/tests/test_rcparams.py::test_validate_fontweight[100-100_1]",
+            "lib/matplotlib/tests/test_rcparams.py::test_validate_fontweight[weight4-100]",
+            "lib/matplotlib/tests/test_rcparams.py::test_validate_fontweight[20.6-20]",
+            "lib/matplotlib/tests/test_rcparams.py::test_validate_fontweight[20.6-ValueError]",
+            "lib/matplotlib/tests/test_rcparams.py::test_validate_fontweight[weight7-ValueError]",
+            "lib/matplotlib/tests/test_rcparams.py::test_validate_fontstretch[expanded-expanded]",
+            "lib/matplotlib/tests/test_rcparams.py::test_validate_fontstretch[EXPANDED-ValueError]",
+            "lib/matplotlib/tests/test_rcparams.py::test_validate_fontstretch[100-100_0]",
+            "lib/matplotlib/tests/test_rcparams.py::test_validate_fontstretch[100-100_1]",
+            "lib/matplotlib/tests/test_rcparams.py::test_validate_fontstretch[stretch4-100]",
+            "lib/matplotlib/tests/test_rcparams.py::test_validate_fontstretch[20.6-20]",
+            "lib/matplotlib/tests/test_rcparams.py::test_validate_fontstretch[20.6-ValueError]",
+            "lib/matplotlib/tests/test_rcparams.py::test_validate_fontstretch[stretch7-ValueError]",
+            "lib/matplotlib/tests/test_rcparams.py::test_keymaps",
+            "lib/matplotlib/tests/test_rcparams.py::test_rcparams_reset_after_fail",
+            "lib/matplotlib/tests/test_rcparams.py::test_backend_fallback_headless",
+            "lib/matplotlib/tests/test_rcparams.py::test_deprecation"
+          ]
+          PASS_EOF
+          cat <<'DIR_EOF' > "$TEST_DIRECTIVES_PATH"
+          [
+            "lib/matplotlib/tests/test_rcparams.py"
+          ]
+          DIR_EOF
+          export FAIL_TO_PASS_PATH PASS_TO_PASS_PATH TEST_DIRECTIVES_PATH TEST_RESULTS_PATH
+          set +e
+          python -c 'import textwrap; code = "import json\nimport os\nimport re\nimport shlex\nimport subprocess\nimport sys\n\ndef _load(key):\n    path = os.environ.get(\"{}_PATH\".format(key))\n    if path and os.path.exists(path):\n        with open(path, \"r\", encoding=\"utf-8\") as handle:\n            raw = handle.read()\n    else:\n        raw = os.environ.get(key, \"[]\")\n    try:\n        return json.loads(raw)\n    except Exception:\n        return []\n\ntest_cmd = os.environ[\"TEST_CMD\"]\nresults_path = os.environ.get(\"TEST_RESULTS_PATH\", \"/tmp/test_results.txt\")\nlog_parts = []\n\ndef log(message):\n    print(message, flush=True)\n    log_parts.append(message + \"\\n\")\n\ndef _as_list(value):\n    if isinstance(value, list):\n        return value\n    if isinstance(value, str):\n        return [value]\n    return []\n\ndef _unique_preserve(values):\n    seen = set()\n    out = []\n    for value in values:\n        if value in seen:\n            continue\n        seen.add(value)\n        out.append(value)\n    return out\n\ndef _parent_test_id(value):\n    if \"[\" in value:\n        return value.split(\"[\", 1)[0].strip()\n    return value.strip()\n\ndef _format_preview(tests, limit=5):\n    shown = [shlex.quote(t) for t in tests[:limit]]\n    if len(tests) > limit:\n        shown.append(\"...\")\n    return \" \".join(shown)\n\ndef _run_cmd(label, tests, chunk_index, chunk_total, attempt):\n    cmd = \" \".join([test_cmd] + [shlex.quote(t) for t in tests])\n    preview = _format_preview(tests)\n    print(\n        \"Running {} chunk {}/{} attempt {} ({} tests): {} {}\".format(\n            label, chunk_index, chunk_total, attempt, len(tests), test_cmd, preview\n        ),\n        flush=True,\n    )\n    result = subprocess.run(\n        cmd,\n        shell=True,\n        stdout=subprocess.PIPE,\n        stderr=subprocess.PIPE,\n        universal_newlines=True,\n    )\n    stdout = result.stdout or \"\"\n    stderr = result.stderr or \"\"\n    if stdout:\n        print(stdout, end=\"\" if stdout.endswith(\"\\n\") else \"\\n\")\n    if stderr:\n        print(stderr, end=\"\" if stderr.endswith(\"\\n\") else \"\\n\", file=sys.stderr)\n    if stdout:\n        log_parts.append(stdout)\n    if stderr:\n        log_parts.append(stderr)\n    return result.returncode == 0, stdout, stderr\n\ndef run_tests(label, tests):\n    tests = _unique_preserve(_as_list(tests))\n    if not tests:\n        print(\"No tests for {}\".format(label))\n        return True\n\n    chunk_size = 25 if label == \"FAIL_TO_PASS\" else 100\n    chunks = [tests[i:i + chunk_size] for i in range(0, len(tests), chunk_size)]\n\n    for chunk_index, chunk in enumerate(chunks, start=1):\n        ok, stdout, stderr = _run_cmd(label, chunk, chunk_index, len(chunks), 1)\n        if ok:\n            continue\n\n        output = \"{}\\n{}\".format(stdout, stderr)\n        if \"ERROR: not found:\" in output:\n            parent_tests = _unique_preserve([_parent_test_id(test) for test in chunk if test])\n            if parent_tests and parent_tests != chunk:\n                log(\n                    \"Retrying {} chunk {}/{} with parent test ids due to missing node IDs\".format(\n                        label, chunk_index, len(chunks)\n                    )\n                )\n                retry_ok, _, _ = _run_cmd(\n                    label,\n                    parent_tests,\n                    chunk_index,\n                    len(chunks),\n                    2,\n                )\n                if retry_ok:\n                    continue\n        return False\n\n    return True\n\ndef _has_unbalanced_brackets(value):\n    depth = 0\n    escaped = False\n    for ch in value:\n        if escaped:\n            escaped = False\n            continue\n        if ch == \"\\\\\":\n            escaped = True\n            continue\n        if ch == \"[\":\n            depth += 1\n        elif ch == \"]\":\n            depth -= 1\n            if depth < 0:\n                return True\n    return depth != 0\n\ndef _has_space_outside_brackets(value):\n    depth = 0\n    for ch in value:\n        if ch == \"[\":\n            depth += 1\n        elif ch == \"]\":\n            depth = max(depth - 1, 0)\n        elif ch.isspace() and depth == 0:\n            return True\n    return False\n\ndef _looks_like_test_id(value):\n    return any(x in value for x in (\"::\", \"/\", \".py\"))\n\ndef _merge_bracket_fragments(labels):\n    merged = []\n    buffer = None\n    for raw in labels:\n        if not isinstance(raw, str):\n            continue\n        value = raw.strip()\n        if not value:\n            continue\n        if buffer is not None:\n            if _looks_like_test_id(value):\n                log(\"Deferring bracket-fragmented test for repair: {}\".format(repr(buffer)))\n                merged.append(buffer)\n                buffer = None\n                # Treat current value as a new candidate.\n            else:\n                buffer = buffer + \" \" + value\n                if not _has_unbalanced_brackets(buffer):\n                    merged.append(buffer)\n                    buffer = None\n                continue\n        if _has_unbalanced_brackets(value):\n            buffer = value\n            continue\n        merged.append(value)\n    if buffer is not None:\n        log(\"Deferring bracket-fragmented test for repair: {}\".format(repr(buffer)))\n        merged.append(buffer)\n    return merged\n\ndef normalize_labels(labels):\n    labels = _as_list(labels)\n    normalized = []\n    for label in labels:\n        if not isinstance(label, str):\n            continue\n        value = label.strip()\n        if not value:\n            continue\n        m = re.match(r\"^([^\\s]+)\\s+\\(([^)]+)\\)$\", value)\n        if m:\n            test_name, path = m.group(1), m.group(2).strip()\n            if path.endswith(\"::\" + test_name) or path.endswith(\".\" + test_name):\n                normalized.append(path)\n            elif re.search(r\"[\\\\/]\", path) or path.endswith(\".py\") or \"::\" in path:\n                normalized.append(\"{}::{}\".format(path, test_name))\n            else:\n                normalized.append(\"{}.{}\".format(path, test_name))\n        else:\n            normalized.append(value)\n    return normalized\n\ndef prefilter_tests(label, tests):\n    tests = _merge_bracket_fragments(_as_list(tests))\n    valid = []\n    skipped = []\n    for test in tests:\n        if not isinstance(test, str):\n            continue\n        value = test.strip()\n        if not value:\n            continue\n        if _has_unbalanced_brackets(value):\n            fallback = value.split(\"[\", 1)[0].strip() if \"[\" in value else \"\"\n            if fallback and not _has_space_outside_brackets(fallback):\n                log(\"Falling back to parent test for {}: {} -> {}\".format(label, repr(value), repr(fallback)))\n                value = fallback\n            else:\n                skipped.append(value)\n                continue\n        if label == \"PASS_TO_PASS\" and \"[\" in value:\n            parent = value.split(\"[\", 1)[0].strip()\n            if parent:\n                value = parent\n        if _has_space_outside_brackets(value):\n            skipped.append(value)\n            continue\n        valid.append(value)\n    if skipped:\n        skipped_str = \", \".join(repr(x) for x in skipped)\n        log(\"Skipping {} non-test entries: {}\".format(label, skipped_str))\n    return _unique_preserve(valid)\n\nfail_to_pass = prefilter_tests(\n    \"FAIL_TO_PASS\",\n    normalize_labels(_load(\"FAIL_TO_PASS\")),\n)\npass_to_pass = prefilter_tests(\n    \"PASS_TO_PASS\",\n    normalize_labels(_load(\"PASS_TO_PASS\")),\n)\ntest_directives = prefilter_tests(\"TEST_DIRECTIVES\", _load(\"TEST_DIRECTIVES\"))\n\nuse_fail_pass = bool(fail_to_pass or pass_to_pass)\n\nexit_code = 0\ntry:\n    if use_fail_pass:\n        if not run_tests(\"FAIL_TO_PASS\", fail_to_pass):\n            exit_code = 1\n        elif not run_tests(\"PASS_TO_PASS\", pass_to_pass):\n            exit_code = 1\n    else:\n        if not run_tests(\"TEST_DIRECTIVES\", test_directives):\n            exit_code = 1\nfinally:\n    try:\n        with open(results_path, \"w\", encoding=\"utf-8\") as handle:\n            handle.write(\"\".join(log_parts))\n    except Exception as exc:\n        print(\"Failed to write test results:\", exc)\nsys.exit(exit_code)"; exec(textwrap.dedent(code))'
+          TEST_EXIT=$?
+          echo "TEST_EXIT=$TEST_EXIT"
+          export TEST_EXIT
+          python -c 'import textwrap; code = "import json\nimport os\nimport sys\nimport urllib.request\n\nurl = os.environ.get(\n    \"WEBHOOK_URL\",\n    \"https://aicodinggym.com/api/webhooks/github\",\n)\ncommit_id = os.environ.get(\"GITHUB_SHA\", \"\")\nbranch_name = os.environ.get(\"GITHUB_REF_NAME\", \"\")\ntest_exit = int(os.environ.get(\"TEST_EXIT\", \"1\"))\nstatus = \"COMPLETED\" if test_exit == 0 else \"FAILED\"\npassed = test_exit == 0\npassed_tests = 1 if passed else 0\ntotal_tests = 1\nfailed_tests = 0 if passed else 1\nresults_path = os.environ.get(\"TEST_RESULTS_PATH\", \"/tmp/test_results.txt\")\ndetails = \"\"\nif os.path.exists(results_path):\n    try:\n        with open(results_path, \"r\", encoding=\"utf-8\") as handle:\n            details = handle.read()\n    except Exception as exc:\n        print(\"Webhook: failed to load test logs:\", exc)\n\nif not url or not commit_id or not branch_name:\n    print(\"Webhook: missing url/commit/branch; skipping.\")\n    sys.exit(0)\npayload = {\n    \"commit_id\": commit_id,\n    \"branch_name\": branch_name,\n    \"status\": status,\n    \"passed\": passed,\n    \"passed_tests\": passed_tests,\n    \"total_tests\": total_tests,\n    \"failed_tests\": failed_tests,\n    \"details\": details,\n}\ndata = json.dumps(payload).encode(\"utf-8\")\nreq = urllib.request.Request(\n    url, data=data,\n    headers={\"Content-Type\": \"application/json\"},\n    method=\"POST\",\n)\ntry:\n    with urllib.request.urlopen(req, timeout=10) as resp:\n        body = resp.read().decode(\"utf-8\")\n        print(\"Webhook response:\", body)\nexcept Exception as exc:\n    print(\"Webhook failed:\", exc)"; exec(textwrap.dedent(code))'
+          exit "$TEST_EXIT"
