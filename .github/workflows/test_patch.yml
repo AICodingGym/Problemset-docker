@@ -60,6 +60,8 @@ jobs:
           git fetch origin $BASE_COMMIT --depth=1 || true
           git diff $BASE_COMMIT HEAD -- ':!.swebench' ':!.github' ':!.devcontainer' ':!.vscode' ':!submit.sh' ':!.gitignore' ':!problem_statement.md' ':!hints_text.md' ':!CLAUDE.md' ':!AGENTS.md' ':!.claudeignore' ':!.copilotignore' ':!.cursorignore' ':!.cursorrules' > /tmp/patch.diff || true
           echo "Patch size: $(wc -c < /tmp/patch.diff) bytes"
+          # Remove source from workspace to avoid import conflicts with /app
+          find $GITHUB_WORKSPACE -name "*.py" -not -path "*/.github/*" -not -path "*/.swebench/*" -delete 2>/dev/null || true
           cd /app
           git apply -v /tmp/patch.diff || echo "No code patch to apply"
 
