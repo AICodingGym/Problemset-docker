@@ -33,7 +33,8 @@ jobs:
           python-version: "3.11"
 
 
-      - name: Cache conda environment
+      - name: Cache environment
+        id: cache-env
         uses: actions/cache@v4
         with:
           path: |
@@ -41,9 +42,9 @@ jobs:
             ~/.cache/pip
             build/
             **/*.so
-          key: env-${{ runner.os }}-${{ hashFiles('.github/workflows/test_patch.yml') }}-${{ hashFiles('**/*.pyx', '**/*.c', 'setup.py', 'setup.cfg') }}
+          key: env-${{ runner.os }}-${{ env.CONDA_ENV }}-${{ hashFiles('**/*.pyx', '**/*.c', 'setup.py', 'setup.cfg') }}
           restore-keys: |
-            env-${{ runner.os }}-${{ hashFiles('.github/workflows/test_patch.yml') }}-
+            env-${{ runner.os }}-${{ env.CONDA_ENV }}-
 
       - name: Git Safe Directory
         shell: "bash -l {0}"
@@ -52,6 +53,7 @@ jobs:
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
 
       - name: Create Conda Environment
+        if: steps.cache-env.outputs.cache-hit != 'true'
         shell: "bash -l {0}"
         run: |
           set -euo pipefail
