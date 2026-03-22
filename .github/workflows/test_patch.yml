@@ -13,6 +13,11 @@ jobs:
   test:
     runs-on: ubuntu-22.04
     timeout-minutes: 240
+    container:
+      image: ghcr.io/aicodinggym/problemset-docker/${{ github.ref_name }}:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
     env:
       INSTANCE_ID: "astropy__astropy-13453"
       REPO: "astropy/astropy"
@@ -26,48 +31,29 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Pull or build Docker image
-        run: |
-          IMAGE="ghcr.io/aicodinggym/problemset-docker/${{ github.ref_name }}:latest"
-          echo "Trying pre-built image: $IMAGE"
-          if docker pull "$IMAGE" 2>/dev/null; then
-            docker tag "$IMAGE" swebench-test
-            echo "Using pre-built image (skipped build)"
-          else
-            echo "Pre-built image not found, building from scratch..."
-            docker build -t swebench-test -f .swebench/Dockerfile .
-          fi
-
-      - name: Prepare workspace
-        run: |
-          git fetch origin $BASE_COMMIT --depth=1
-          mkdir -p /tmp/swebench-workspace
-          git diff $BASE_COMMIT HEAD -- ':!.swebench' ':!.github' ':!.devcontainer' ':!.vscode' ':!submit.sh' ':!.gitignore' ':!problem_statement.md' ':!hints_text.md' ':!CLAUDE.md' ':!AGENTS.md' ':!.claudeignore' ':!.copilotignore' ':!.cursorignore' ':!.cursorrules' > /tmp/swebench-workspace/patch.diff || true
-          echo "Patch size: $(wc -c < /tmp/swebench-workspace/patch.diff) bytes"
-          cp .swebench/run_script.sh /tmp/swebench-workspace/run_script.sh
-          cp .swebench/parser.py /tmp/swebench-workspace/parser.py
-          cp .swebench/entrypoint.sh /tmp/swebench-workspace/entrypoint.sh
-          chmod +x /tmp/swebench-workspace/run_script.sh
-          chmod +x /tmp/swebench-workspace/entrypoint.sh
-
-      - name: Run tests in Docker
-        id: run_tests
+      - name: Setup and run tests
+        shell: bash
         run: |
           set +e
-          docker run --rm \
-            -v /tmp/swebench-workspace:/workspace \
-            swebench-test \
-            /workspace/entrypoint.sh
-          TEST_EXIT=$?
+          git config --global --add safe.directory $GITHUB_WORKSPACE
+
+          # Activate conda environment
+          source /opt/conda/etc/profile.d/conda.sh
+          conda activate testbed
+
+          # Install repo in editable mode (fast — deps already cached in image)
+          pip install -e . 2>/dev/null || python setup.py develop 2>/dev/null || true
+
+          # Run FAIL_TO_PASS and PASS_TO_PASS tests
+          if [ -f .swebench/run_script.sh ]; then
+            chmod +x .swebench/run_script.sh
+            bash .swebench/run_script.sh $TEST_FILES
+            TEST_EXIT=$?
+          else
+            pytest -rA $TEST_FILES
+            TEST_EXIT=$?
+          fi
+
           echo "TEST_EXIT=$TEST_EXIT" >> "$GITHUB_ENV"
           echo "test_exit=$TEST_EXIT" >> "$GITHUB_OUTPUT"
-
-          echo ''
-          echo "===== TEST RESULTS ====="
-          if [ -f /tmp/swebench-workspace/output.json ]; then
-            cat /tmp/swebench-workspace/output.json
-          else
-            echo "No parsed output found."
-          fi
-          echo "========================"
           exit $TEST_EXIT
