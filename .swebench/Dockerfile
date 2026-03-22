@@ -58,13 +58,11 @@ RUN cat <<'INSTALL_EOF' > /tmp/install.sh
 #!/bin/bash
 set -e
 source activate testbed
-git fetch --tags
+cd /app
+git fetch --tags "https://github.com/psf/requests.git" || true
+python -m pip install -e . || python -m pip install . || true
 INSTALL_EOF
-RUN chmod +x /tmp/install.sh && /tmp/install.sh && rm /tmp/install.shhttps://github.com/$REPO.git" || true
-TARGET_TIMESTAMP=$(git show -s --format=%ci "$BASE_COMMIT")
-git tag -l | while read tag; do TAG_COMMIT=$(git rev-list -n 1 "$tag"); TAG_TIME=$(git show -s --format=%ci "$TAG_COMMIT"); if [[ "$TAG_TIME" > "$TARGET_TIMESTAMP" ]]; then git tag -d "$tag"; fi; done
-python -m pip install ."
-
+RUN chmod +x /tmp/install.sh && /tmp/install.sh && rm /tmp/install.sh
 # Reset to base commit (code will be patched at runtime)
 RUN git checkout 091991be0da19de9108dbe5e3752917fea3d7fdc || true
 
