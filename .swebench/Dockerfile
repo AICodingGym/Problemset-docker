@@ -5,16 +5,7 @@ RUN apt-get update && apt-get install -y \
     git build-essential libffi-dev libssl-dev \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
-# Working directory
-RUN mkdir -p /app
-WORKDIR /app
-
-# Clone repo (only needed commit, not full history)
-RUN git clone --depth 1 https://github.com/astropy/astropy.git . && \
-    git fetch --depth 1 origin 298ccb478e6bf092953bca67a3d29dc6c35f6752 && \
-    git checkout 298ccb478e6bf092953bca67a3d29dc6c35f6752
-
-# Create conda environment
+# Create conda environment (dependencies only — repo installed at runtime from checkout)
 RUN cat <<'ENV_EOF' > /tmp/environment.yml
 name: testbed
 channels:
@@ -71,17 +62,6 @@ ENV_EOF
 RUN conda env create --file /tmp/environment.yml && \
     conda clean -afy && \
     rm /tmp/environment.yml
-
-# Install repo and dependencies
-RUN /bin/bash -c "source activate testbed && \
-    git fetch --tags "https://github.com/$REPO.git" || true
-TARGET_TIMESTAMP=$(git show -s --format=%ci "$BASE_COMMIT")
-git tag -l | while read tag; do TAG_COMMIT=$(git rev-list -n 1 "$tag"); TAG_TIME=$(git show -s --format=%ci "$TAG_COMMIT"); if [[ "$TAG_TIME" > "$TARGET_TIMESTAMP" ]]; then git tag -d "$tag"; fi; done
-sed -i 's/requires = \["setuptools",/requires = \["setuptools==68.0.0",/' pyproject.toml
-python -m pip install -e .[test] --verbose"
-
-# Reset to base commit (code will be patched at runtime)
-RUN git checkout d16bfe05a744909de4b27f5875fe0d4ed41ce607 || true
 
 # Environment variables
 
