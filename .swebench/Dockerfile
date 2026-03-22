@@ -12,6 +12,7 @@ RUN wget -q https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.s
     bash /tmp/miniconda.sh -b -p /opt/conda && \
     rm /tmp/miniconda.sh
 ENV PATH="/opt/conda/bin:$PATH"
+SHELL ["/bin/bash", "-c"]
 RUN conda init bash && conda config --add channels conda-forge
 
 # Create conda environment (dependencies only — repo installed at runtime from checkout)
