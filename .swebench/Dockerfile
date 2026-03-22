@@ -14,10 +14,9 @@ ENV PATH="/opt/conda/bin:$PATH"
 
 RUN conda init bash && conda config --add channels conda-forge
 
-COPY environment.yml /tmp/environment.yml
+COPY .swebench/environment.yml /tmp/environment.yml
 RUN conda env create --file /tmp/environment.yml && \
     conda clean -afy && \
     rm /tmp/environment.yml
-
 
 CMD ["bash"]
