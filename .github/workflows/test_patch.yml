@@ -56,9 +56,6 @@ jobs:
           conda activate "$CONDA_ENV"
           git config --global --add safe.directory /app
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
-          cd /app
-          git fetch origin $BASE_COMMIT --depth=1 || true
-          git reset --hard $BASE_COMMIT
           cd $GITHUB_WORKSPACE
           git fetch origin $BASE_COMMIT --depth=1 || true
           git diff $BASE_COMMIT HEAD -- ':!.swebench' ':!.github' ':!.devcontainer' ':!.vscode' ':!submit.sh' ':!.gitignore' ':!problem_statement.md' ':!hints_text.md' ':!CLAUDE.md' ':!AGENTS.md' ':!.claudeignore' ':!.copilotignore' ':!.cursorignore' ':!.cursorrules' > /tmp/patch.diff || true
