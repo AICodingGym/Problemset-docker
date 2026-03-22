@@ -38,7 +38,12 @@ jobs:
         with:
           path: |
             ${{ env.CONDA }}/envs
-          key: conda-${{ runner.os }}-${{ hashFiles('.github/workflows/test_patch.yml') }}
+            ~/.cache/pip
+            build/
+            **/*.so
+          key: env-${{ runner.os }}-${{ hashFiles('.github/workflows/test_patch.yml') }}-${{ hashFiles('**/*.pyx', '**/*.c', 'setup.py', 'setup.cfg') }}
+          restore-keys: |
+            env-${{ runner.os }}-${{ hashFiles('.github/workflows/test_patch.yml') }}-
 
       - name: Git Safe Directory
         shell: "bash -l {0}"
