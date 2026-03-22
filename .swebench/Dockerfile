@@ -5,16 +5,7 @@ RUN apt-get update && apt-get install -y \
     git build-essential libffi-dev libssl-dev \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
-# Working directory
-RUN mkdir -p /app
-WORKDIR /app
-
-# Clone repo (only needed commit, not full history)
-RUN git clone --depth 1 https://github.com/scikit-learn/scikit-learn.git . && \
-    git fetch --depth 1 origin 1e8a5b833d1b58f3ab84099c4582239af854b23a && \
-    git checkout 1e8a5b833d1b58f3ab84099c4582239af854b23a
-
-# Create conda environment
+# Create conda environment (dependencies only — repo installed at runtime from checkout)
 RUN cat <<'ENV_EOF' > /tmp/environment.yml
 name: testbed
 channels:
@@ -140,19 +131,6 @@ ENV_EOF
 RUN conda env create --file /tmp/environment.yml && \
     conda clean -afy && \
     rm /tmp/environment.yml
-
-# Install repo and dependencies
-RUN cat <<'INSTALL_EOF' > /tmp/install.sh
-#!/bin/bash
-set -e
-source activate testbed
-cd /app
-git fetch --tags "https://github.com/scikit-learn/scikit-learn.git" || true
-python -m pip install -e . || python -m pip install . || true
-INSTALL_EOF
-RUN chmod +x /tmp/install.sh && /tmp/install.sh && rm /tmp/install.sh
-# Reset to base commit (code will be patched at runtime)
-RUN git checkout 10dbc142bd17ccf7bd38eec2ac04b52ce0d1009e || true
 
 # Environment variables
 
