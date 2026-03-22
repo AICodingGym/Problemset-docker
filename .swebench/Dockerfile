@@ -5,16 +5,7 @@ RUN apt-get update && apt-get install -y \
     git build-essential libffi-dev libssl-dev \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
-# Working directory
-RUN mkdir -p /app
-WORKDIR /app
-
-# Clone repo (only needed commit, not full history)
-RUN git clone --depth 1 https://github.com/matplotlib/matplotlib.git . && \
-    git fetch --depth 1 origin 42259bb9715bbacbbb2abc8005df836f3a7fd080 && \
-    git checkout 42259bb9715bbacbbb2abc8005df836f3a7fd080
-
-# Create conda environment
+# Create conda environment (dependencies only — repo installed at runtime from checkout)
 RUN cat <<'ENV_EOF' > /tmp/environment.yml
 name: testbed
 channels:
@@ -81,23 +72,6 @@ ENV_EOF
 RUN conda env create --file /tmp/environment.yml && \
     conda clean -afy && \
     rm /tmp/environment.yml
-
-# Install repo and dependencies
-RUN /bin/bash -c "source activate testbed && \
-    git fetch --tags "https://github.com/$REPO.git" || true
-TARGET_TIMESTAMP=$(git show -s --format=%ci "$BASE_COMMIT")
-git tag -l | while read tag; do TAG_COMMIT=$(git rev-list -n 1 "$tag"); TAG_TIME=$(git show -s --format=%ci "$TAG_COMMIT"); if [[ "$TAG_TIME" > "$TARGET_TIMESTAMP" ]]; then git tag -d "$tag"; fi; done
-sudo apt-get -y update && sudo apt-get -y upgrade && DEBIAN_FRONTEND=noninteractive sudo apt-get install -y imagemagick ffmpeg libfreetype6-dev pkg-config texlive texlive-latex-extra texlive-fonts-recommended texlive-xetex texlive-luatex cm-super
-QHULL_URL="http://www.qhull.org/download/qhull-2020-src-8.0.2.tgz"
-QHULL_TAR="/tmp/qhull-2020-src-8.0.2.tgz"
-QHULL_BUILD_DIR="$GITHUB_WORKSPACE/build"
-wget -O "$QHULL_TAR" "$QHULL_URL"
-mkdir -p "$QHULL_BUILD_DIR"
-tar -xvzf "$QHULL_TAR" -C "$QHULL_BUILD_DIR"
-python -m pip install -e ."
-
-# Reset to base commit (code will be patched at runtime)
-RUN git checkout d65c9ca20ddf81ef91199e6d819f9d3506ef477c || true
 
 # Environment variables
 
