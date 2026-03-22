@@ -57,6 +57,7 @@ jobs:
           git config --global --add safe.directory /app
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
           cd /app
+          git fetch origin $BASE_COMMIT --depth=1 || true
           git reset --hard $BASE_COMMIT
           cd $GITHUB_WORKSPACE
           git fetch origin $BASE_COMMIT --depth=1 || true
