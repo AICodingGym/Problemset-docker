@@ -373,20 +373,11 @@ RUN cat <<'INSTALL_EOF' > /tmp/install.sh
 #!/bin/bash
 set -e
 source activate testbed
-git fetch --tags
+cd /app
+git fetch --tags "https://github.com/matplotlib/matplotlib.git" || true
+python -m pip install -e . || python -m pip install . || true
 INSTALL_EOF
-RUN chmod +x /tmp/install.sh && /tmp/install.sh && rm /tmp/install.shhttps://github.com/$REPO.git" || true
-TARGET_TIMESTAMP=$(git show -s --format=%ci "$BASE_COMMIT")
-git tag -l | while read tag; do TAG_COMMIT=$(git rev-list -n 1 "$tag"); TAG_TIME=$(git show -s --format=%ci "$TAG_COMMIT"); if [[ "$TAG_TIME" > "$TARGET_TIMESTAMP" ]]; then git tag -d "$tag"; fi; done
-sudo apt-get -y update && sudo apt-get -y upgrade && DEBIAN_FRONTEND=noninteractive sudo apt-get install -y imagemagick ffmpeg texlive texlive-latex-extra texlive-fonts-recommended texlive-xetex texlive-luatex cm-super dvipng
-QHULL_URL="http://www.qhull.org/download/qhull-2020-src-8.0.2.tgz"
-QHULL_TAR="/tmp/qhull-2020-src-8.0.2.tgz"
-QHULL_BUILD_DIR="$GITHUB_WORKSPACE/build"
-wget -O "$QHULL_TAR" "$QHULL_URL"
-mkdir -p "$QHULL_BUILD_DIR"
-tar -xvzf "$QHULL_TAR" -C "$QHULL_BUILD_DIR"
-python -m pip install -e ."
-
+RUN chmod +x /tmp/install.sh && /tmp/install.sh && rm /tmp/install.sh
 # Reset to base commit (code will be patched at runtime)
 RUN git checkout 5ca694b38d861c0e24cd8743753427dda839b90b || true
 
