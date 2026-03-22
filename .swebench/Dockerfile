@@ -5,16 +5,7 @@ RUN apt-get update && apt-get install -y \
     git build-essential libffi-dev libssl-dev \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
-# Working directory
-RUN mkdir -p /app
-WORKDIR /app
-
-# Clone repo (only needed commit, not full history)
-RUN git clone --depth 1 https://github.com/pytest-dev/pytest.git . && \
-    git fetch --depth 1 origin c1361b48f83911aa721b21a4515a5446515642e2 && \
-    git checkout c1361b48f83911aa721b21a4515a5446515642e2
-
-# Create conda environment
+# Create conda environment (dependencies only — repo installed at runtime from checkout)
 RUN cat <<'ENV_EOF' > /tmp/environment.yml
 name: testbed
 channels:
@@ -53,16 +44,6 @@ ENV_EOF
 RUN conda env create --file /tmp/environment.yml && \
     conda clean -afy && \
     rm /tmp/environment.yml
-
-# Install repo and dependencies
-RUN /bin/bash -c "source activate testbed && \
-    git fetch --tags "https://github.com/$REPO.git" || true
-TARGET_TIMESTAMP=$(git show -s --format=%ci "$BASE_COMMIT")
-git tag -l | while read tag; do TAG_COMMIT=$(git rev-list -n 1 "$tag"); TAG_TIME=$(git show -s --format=%ci "$TAG_COMMIT"); if [[ "$TAG_TIME" > "$TARGET_TIMESTAMP" ]]; then git tag -d "$tag"; fi; done
-python -m pip install -e ."
-
-# Reset to base commit (code will be patched at runtime)
-RUN git checkout 73c5b7f4b11a81e971f7d1bb18072e06a87060f4 || true
 
 # Environment variables
 
