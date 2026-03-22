@@ -120,6 +120,7 @@ jobs:
           git checkout "$GITHUB_SHA"
 
       - name: Install Repo
+        if: steps.cache-env.outputs.cache-hit != 'true'
         shell: "bash -l {0}"
         run: |
           set -euo pipefail
