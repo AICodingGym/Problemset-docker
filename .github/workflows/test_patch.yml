@@ -52,25 +52,15 @@ jobs:
           fi
           git checkout "$GITHUB_SHA"
 
-      - name: Cache build artifacts
-        uses: actions/cache@v4
-        with:
-          path: |
-            build/
-            **/*.so
-          key: build-${{ hashFiles('**/*.pyx', '**/*.c', '**/*.h') }}
-          restore-keys: build-
-
       - name: Install Repo
-        shell: "bash -l {0}"
+        shell: "bash -l {{0}}"
         run: |
           set -euo pipefail
           source "$(conda info --base)/etc/profile.d/conda.sh"
           conda activate "$CONDA_ENV"
-          git fetch --tags "https://github.com/$REPO.git" || true
-          TARGET_TIMESTAMP=$(git show -s --format=%ci "$BASE_COMMIT")
-          git tag -l | while read tag; do TAG_COMMIT=$(git rev-list -n 1 "$tag"); TAG_TIME=$(git show -s --format=%ci "$TAG_COMMIT"); if [[ "$TAG_TIME" > "$TARGET_TIMESTAMP" ]]; then git tag -d "$tag"; fi; done
-          python -m pip install .
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          export SETUPTOOLS_SCM_PRETEND_VERSION=0.0.0
+          python -m pip install -v --no-use-pep517 --no-build-isolation -e . 2>&1 | tail -20
 
       - name: Apply Test Patch
         shell: "bash -l {0}"
