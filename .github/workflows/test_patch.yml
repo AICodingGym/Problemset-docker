@@ -5,6 +5,10 @@ on:
   pull_request:
   workflow_dispatch:
 
+permissions:
+  contents: read
+  packages: read
+
 jobs:
   test:
     runs-on: ubuntu-22.04
@@ -17,9 +21,17 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Build Docker image
+      - name: Pull or build Docker image
         run: |
-          docker build -t swebench-test -f .swebench/Dockerfile .
+          IMAGE="ghcr.io/aicodinggym/problemset-docker/${{ github.ref_name }}:latest"
+          echo "Trying pre-built image: $IMAGE"
+          if docker pull "$IMAGE" 2>/dev/null; then
+            docker tag "$IMAGE" swebench-test
+            echo "Using pre-built image (skipped build)"
+          else
+            echo "Pre-built image not found, building from scratch..."
+            docker build -t swebench-test -f .swebench/Dockerfile .
+          fi
 
       - name: Prepare workspace
         run: |
