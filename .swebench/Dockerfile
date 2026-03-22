@@ -54,8 +54,13 @@ RUN conda env create --file /tmp/environment.yml && \
     rm /tmp/environment.yml
 
 # Install repo and dependencies
-RUN /bin/bash -c "source activate testbed && \
-    git fetch --tags "https://github.com/$REPO.git" || true
+RUN cat <<'INSTALL_EOF' > /tmp/install.sh
+#!/bin/bash
+set -e
+source activate testbed
+git fetch --tags
+INSTALL_EOF
+RUN chmod +x /tmp/install.sh && /tmp/install.sh && rm /tmp/install.shhttps://github.com/$REPO.git" || true
 TARGET_TIMESTAMP=$(git show -s --format=%ci "$BASE_COMMIT")
 git tag -l | while read tag; do TAG_COMMIT=$(git rev-list -n 1 "$tag"); TAG_TIME=$(git show -s --format=%ci "$TAG_COMMIT"); if [[ "$TAG_TIME" > "$TARGET_TIMESTAMP" ]]; then git tag -d "$tag"; fi; done
 python -m pip install ."
