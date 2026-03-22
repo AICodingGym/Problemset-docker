@@ -5,16 +5,7 @@ RUN apt-get update && apt-get install -y \
     git build-essential libffi-dev libssl-dev \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
-# Working directory
-RUN mkdir -p /app
-WORKDIR /app
-
-# Clone repo (only needed commit, not full history)
-RUN git clone --depth 1 https://github.com/sphinx-doc/sphinx.git . && \
-    git fetch --depth 1 origin 50d2d289e150cb429de15770bdd48a723de8c45d && \
-    git checkout 50d2d289e150cb429de15770bdd48a723de8c45d
-
-# Create conda environment
+# Create conda environment (dependencies only — repo installed at runtime from checkout)
 RUN cat <<'ENV_EOF' > /tmp/environment.yml
 name: testbed
 channels:
@@ -82,25 +73,6 @@ ENV_EOF
 RUN conda env create --file /tmp/environment.yml && \
     conda clean -afy && \
     rm /tmp/environment.yml
-
-# Install repo and dependencies
-RUN /bin/bash -c "source activate testbed && \
-    git fetch --tags "https://github.com/$REPO.git" || true
-TARGET_TIMESTAMP=$(git show -s --format=%ci "$BASE_COMMIT")
-git tag -l | while read tag; do TAG_COMMIT=$(git rev-list -n 1 "$tag"); TAG_TIME=$(git show -s --format=%ci "$TAG_COMMIT"); if [[ "$TAG_TIME" > "$TARGET_TIMESTAMP" ]]; then git tag -d "$tag"; fi; done
-sed -i 's/pytest/pytest -rA/' tox.ini
-sed -i 's/Jinja2>=2.3/Jinja2<3.0/' setup.py
-sed -i 's/sphinxcontrib-applehelp/sphinxcontrib-applehelp<=1.0.7/' setup.py
-sed -i 's/sphinxcontrib-devhelp/sphinxcontrib-devhelp<=1.0.5/' setup.py
-sed -i 's/sphinxcontrib-qthelp/sphinxcontrib-qthelp<=1.0.6/' setup.py
-sed -i 's/alabaster>=0.7,<0.8/alabaster>=0.7,<0.7.12/' setup.py
-sed -i "s/'packaging',/'packaging', 'markupsafe<=2.0.1',/" setup.py
-sed -i 's/sphinxcontrib-htmlhelp/sphinxcontrib-htmlhelp<=2.0.4/' setup.py
-sed -i 's/sphinxcontrib-serializinghtml/sphinxcontrib-serializinghtml<=1.1.9/' setup.py
-python -m pip install -e .[test]"
-
-# Reset to base commit (code will be patched at runtime)
-RUN git checkout 9bb204dcabe6ba0fc422bf4a45ad0c79c680d90b || true
 
 # Environment variables
 
