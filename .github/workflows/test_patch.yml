@@ -30,9 +30,6 @@ jobs:
           git remote set-url origin https://github.com/${{ github.repository }}
           git fetch origin ${{ github.sha }} --depth=1
           git checkout ${{ github.sha }}
-        with:
-          fetch-depth: 1
-          fetch-tags: false
 
       - name: Git Safe Directory
         shell: "bash -l {0}"
