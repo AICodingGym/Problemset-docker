@@ -30,7 +30,8 @@ RUN git clone --depth 1 https://github.com/matplotlib/matplotlib.git . && \
 SHELL ["/bin/bash", "-c"]
 RUN source activate testbed && \
     export SETUPTOOLS_SCM_PRETEND_VERSION=0.0.0 && \
-    python -m pip install -v --no-use-pep517 --no-build-isolation -e .
+              python -m pip install contourpy==1.1.0 cycler==0.11.0 fonttools==4.42.1 ghostscript kiwisolver==1.4.5 numpy==1.25.2 packaging==23.1 pillow==10.0.0 pikepdf pyparsing==3.0.9 python-dateutil==2.8.2 six==1.16.0 setuptools==68.1.2 setuptools-scm==7.1.0 typing-extensions==4.7.1
+    python -m pip install -e .
 
 # Reset to base commit
 RUN git checkout 5ca694b38d861c0e24cd8743753427dda839b90b || true
