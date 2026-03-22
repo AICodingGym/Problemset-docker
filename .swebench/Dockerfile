@@ -5,16 +5,7 @@ RUN apt-get update && apt-get install -y \
     git build-essential libffi-dev libssl-dev \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
-# Working directory
-RUN mkdir -p /app
-WORKDIR /app
-
-# Clone repo (only needed commit, not full history)
-RUN git clone --depth 1 https://github.com/scikit-learn/scikit-learn.git . && \
-    git fetch --depth 1 origin 1e8a5b833d1b58f3ab84099c4582239af854b23a && \
-    git checkout 1e8a5b833d1b58f3ab84099c4582239af854b23a
-
-# Create conda environment
+# Create conda environment (dependencies only — repo installed at runtime from checkout)
 RUN cat <<'ENV_EOF' > /tmp/environment.yml
 name: testbed
 channels:
@@ -140,16 +131,6 @@ ENV_EOF
 RUN conda env create --file /tmp/environment.yml && \
     conda clean -afy && \
     rm /tmp/environment.yml
-
-# Install repo and dependencies
-RUN /bin/bash -c "source activate testbed && \
-    git fetch --tags "https://github.com/$REPO.git" || true
-TARGET_TIMESTAMP=$(git show -s --format=%ci "$BASE_COMMIT")
-git tag -l | while read tag; do TAG_COMMIT=$(git rev-list -n 1 "$tag"); TAG_TIME=$(git show -s --format=%ci "$TAG_COMMIT"); if [[ "$TAG_TIME" > "$TARGET_TIMESTAMP" ]]; then git tag -d "$tag"; fi; done
-python -m pip install -v --no-use-pep517 --no-build-isolation -e ."
-
-# Reset to base commit (code will be patched at runtime)
-RUN git checkout 586f4318ffcdfbd9a1093f35ad43e81983740b66 || true
 
 # Environment variables
 
