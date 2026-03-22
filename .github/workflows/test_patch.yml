@@ -41,7 +41,6 @@ jobs:
           key: conda-${{ runner.os }}-${{ hashFiles('.github/workflows/test_patch.yml') }}
 
       - name: Git Safe Directory
-      - name: Git Safe Directory
         shell: "bash -l {0}"
         run: |
           set -euo pipefail
