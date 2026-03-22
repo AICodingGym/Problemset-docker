@@ -12,48 +12,760 @@ permissions:
 jobs:
   test:
     runs-on: ubuntu-22.04
-    timeout-minutes: 240
     container:
       image: ghcr.io/aicodinggym/problemset-docker/${{ github.ref_name }}:latest
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
+    timeout-minutes: 240
     env:
       INSTANCE_ID: "pydata__xarray-4356"
       REPO: "pydata/xarray"
       VERSION: "0.12"
       BASE_COMMIT: "e05fddea852d08fc0845f954b79deb9e9f9ff883"
       ENV_SETUP_COMMIT: "1c198a191127c601d091213c4b3292a8bb3054e1"
-      TEST_CMD: "pytest -rA"
-      TEST_FILES: "xarray/tests/test_duck_array_ops.py"
+      TEST_CMD: 'pytest -rA'
+      TEST_FILES: 'xarray/tests/test_duck_array_ops.py'
       CONDA_ENV: "testbed"
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          fetch-tags: false
 
-      - name: Setup and run tests
-        shell: bash
+      - name: Git Safe Directory
+        shell: "bash -l {0}"
         run: |
-          set +e
-          git config --global --add safe.directory $GITHUB_WORKSPACE
+          set -euo pipefail
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
 
-          # Activate conda environment
-          source /opt/conda/etc/profile.d/conda.sh
-          conda activate testbed
-
-          # Install repo in editable mode (fast — deps already cached in image)
-          pip install -e . 2>/dev/null || python setup.py develop 2>/dev/null || true
-
-          # Run FAIL_TO_PASS and PASS_TO_PASS tests
-          if [ -f .swebench/run_script.sh ]; then
-            chmod +x .swebench/run_script.sh
-            bash .swebench/run_script.sh $TEST_FILES
-            TEST_EXIT=$?
-          else
-            pytest -rA $TEST_FILES
-            TEST_EXIT=$?
+      - name: Checkout Trigger Commit
+        shell: "bash -l {0}"
+        run: |
+          set -euo pipefail
+          if ! git cat-file -e "$BASE_COMMIT^{commit}" 2>/dev/null; then
+            git fetch --depth=1 "https://github.com/$REPO.git" "$BASE_COMMIT" || true
           fi
+          if ! git cat-file -e "$GITHUB_SHA^{commit}" 2>/dev/null; then
+            git fetch --depth=1 "https://github.com/$REPO.git" "$GITHUB_SHA" || true
+          fi
+          git checkout "$GITHUB_SHA"
 
-          echo "TEST_EXIT=$TEST_EXIT" >> "$GITHUB_ENV"
-          echo "test_exit=$TEST_EXIT" >> "$GITHUB_OUTPUT"
-          exit $TEST_EXIT
+      - name: Cache build artifacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            build/
+            **/*.so
+          key: build-${{ hashFiles('**/*.pyx', '**/*.c', '**/*.h') }}
+          restore-keys: build-
+
+      - name: Install Repo
+        shell: "bash -l {0}"
+        run: |
+          set -euo pipefail
+          source "$(conda info --base)/etc/profile.d/conda.sh"
+          conda activate "$CONDA_ENV"
+          git fetch --tags "https://github.com/$REPO.git" || true
+          TARGET_TIMESTAMP=$(git show -s --format=%ci "$BASE_COMMIT")
+          git tag -l | while read tag; do TAG_COMMIT=$(git rev-list -n 1 "$tag"); TAG_TIME=$(git show -s --format=%ci "$TAG_COMMIT"); if [[ "$TAG_TIME" > "$TARGET_TIMESTAMP" ]]; then git tag -d "$tag"; fi; done
+          python -m pip install -e .
+
+      - name: Apply Test Patch
+        shell: "bash -l {0}"
+        run: |
+          set -euo pipefail
+          git apply --verbose --reject - <<'PATCH_EOF'
+          diff --git a/xarray/tests/test_duck_array_ops.py b/xarray/tests/test_duck_array_ops.py
+          --- a/xarray/tests/test_duck_array_ops.py
+          +++ b/xarray/tests/test_duck_array_ops.py
+          @@ -595,6 +595,24 @@ def test_min_count(dim_num, dtype, dask, func, aggdim):
+               assert_dask_array(actual, dask)
+           
+           
+          +@pytest.mark.parametrize("dtype", [float, int, np.float32, np.bool_])
+          +@pytest.mark.parametrize("dask", [False, True])
+          +@pytest.mark.parametrize("func", ["sum", "prod"])
+          +def test_min_count_nd(dtype, dask, func):
+          +    if dask and not has_dask:
+          +        pytest.skip("requires dask")
+          +
+          +    min_count = 3
+          +    dim_num = 3
+          +    da = construct_dataarray(dim_num, dtype, contains_nan=True, dask=dask)
+          +    actual = getattr(da, func)(dim=["x", "y", "z"], skipna=True, min_count=min_count)
+          +    # Supplying all dims is equivalent to supplying `...` or `None`
+          +    expected = getattr(da, func)(dim=..., skipna=True, min_count=min_count)
+          +
+          +    assert_allclose(actual, expected)
+          +    assert_dask_array(actual, dask)
+          +
+          +
+           @pytest.mark.parametrize("func", ["sum", "prod"])
+           def test_min_count_dataset(func):
+               da = construct_dataarray(2, dtype=float, contains_nan=True, dask=False)
+          @@ -606,14 +624,15 @@ def test_min_count_dataset(func):
+           
+           @pytest.mark.parametrize("dtype", [float, int, np.float32, np.bool_])
+           @pytest.mark.parametrize("dask", [False, True])
+          +@pytest.mark.parametrize("skipna", [False, True])
+           @pytest.mark.parametrize("func", ["sum", "prod"])
+          -def test_multiple_dims(dtype, dask, func):
+          +def test_multiple_dims(dtype, dask, skipna, func):
+               if dask and not has_dask:
+                   pytest.skip("requires dask")
+               da = construct_dataarray(3, dtype, contains_nan=True, dask=dask)
+           
+          -    actual = getattr(da, func)(("x", "y"))
+          -    expected = getattr(getattr(da, func)("x"), func)("y")
+          +    actual = getattr(da, func)(("x", "y"), skipna=skipna)
+          +    expected = getattr(getattr(da, func)("x", skipna=skipna), func)("y", skipna=skipna)
+               assert_allclose(actual, expected)
+           
+           
+          PATCH_EOF
+
+      - name: Run Tests
+        shell: "bash -l {0}"
+        run: |
+          set -euo pipefail
+          source "$(conda info --base)/etc/profile.d/conda.sh"
+          conda activate "$CONDA_ENV"
+          FAIL_TO_PASS_PATH=/tmp/fail_to_pass.json
+          PASS_TO_PASS_PATH=/tmp/pass_to_pass.json
+          TEST_DIRECTIVES_PATH=/tmp/test_directives.json
+          TEST_RESULTS_PATH=/tmp/test_results.txt
+          cat <<'FAIL_EOF' > "$FAIL_TO_PASS_PATH"
+          [
+            "xarray/tests/test_duck_array_ops.py::test_min_count_nd[sum-False-float]",
+            "xarray/tests/test_duck_array_ops.py::test_min_count_nd[sum-False-int]",
+            "xarray/tests/test_duck_array_ops.py::test_min_count_nd[sum-False-float32]",
+            "xarray/tests/test_duck_array_ops.py::test_min_count_nd[sum-False-bool_]",
+            "xarray/tests/test_duck_array_ops.py::test_min_count_nd[prod-False-float]",
+            "xarray/tests/test_duck_array_ops.py::test_min_count_nd[prod-False-int]",
+            "xarray/tests/test_duck_array_ops.py::test_min_count_nd[prod-False-float32]",
+            "xarray/tests/test_duck_array_ops.py::test_min_count_nd[prod-False-bool_]"
+          ]
+          FAIL_EOF
+          cat <<'PASS_EOF' > "$PASS_TO_PASS_PATH"
+          [
+            "xarray/tests/test_duck_array_ops.py::TestOps::test_first",
+            "xarray/tests/test_duck_array_ops.py::TestOps::test_last",
+            "xarray/tests/test_duck_array_ops.py::TestOps::test_count",
+            "xarray/tests/test_duck_array_ops.py::TestOps::test_where_type_promotion",
+            "xarray/tests/test_duck_array_ops.py::TestOps::test_stack_type_promotion",
+            "xarray/tests/test_duck_array_ops.py::TestOps::test_concatenate_type_promotion",
+            "xarray/tests/test_duck_array_ops.py::TestOps::test_all_nan_arrays",
+            "xarray/tests/test_duck_array_ops.py::test_cumsum_1d",
+            "xarray/tests/test_duck_array_ops.py::test_cumsum_2d",
+            "xarray/tests/test_duck_array_ops.py::test_cumprod_2d",
+            "xarray/tests/test_duck_array_ops.py::TestArrayNotNullEquiv::test_equal[arr10-arr20]",
+            "xarray/tests/test_duck_array_ops.py::TestArrayNotNullEquiv::test_equal[arr11-arr21]",
+            "xarray/tests/test_duck_array_ops.py::TestArrayNotNullEquiv::test_equal[arr12-arr22]",
+            "xarray/tests/test_duck_array_ops.py::TestArrayNotNullEquiv::test_some_not_equal",
+            "xarray/tests/test_duck_array_ops.py::TestArrayNotNullEquiv::test_wrong_shape",
+            "xarray/tests/test_duck_array_ops.py::TestArrayNotNullEquiv::test_types[val10-val20-val30-null0]",
+            "xarray/tests/test_duck_array_ops.py::TestArrayNotNullEquiv::test_types[1.0-2.0-3.0-nan]",
+            "xarray/tests/test_duck_array_ops.py::TestArrayNotNullEquiv::test_types[foo-bar-baz-None]",
+            "xarray/tests/test_duck_array_ops.py::TestArrayNotNullEquiv::test_types[foo-bar-baz-nan]",
+            "xarray/tests/test_duck_array_ops.py::test_datetime_mean[False]",
+            "xarray/tests/test_duck_array_ops.py::test_datetime_mean[True]",
+            "xarray/tests/test_duck_array_ops.py::test_cftime_datetime_mean",
+            "xarray/tests/test_duck_array_ops.py::test_cftime_datetime_mean_long_time_period",
+            "xarray/tests/test_duck_array_ops.py::test_cftime_datetime_mean_dask_error",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[None-False-sum-False-float-1]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[None-False-sum-False-float-2]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[None-False-sum-False-int-1]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[None-False-sum-False-int-2]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[None-False-sum-False-float32-1]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[None-False-sum-False-float32-2]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[None-False-sum-False-bool_-1]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[None-False-sum-False-bool_-2]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[None-False-sum-True-float-1]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[None-False-sum-True-float-2]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[None-False-sum-True-int-1]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[None-False-sum-True-int-2]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[None-False-sum-True-float32-1]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[None-False-sum-True-float32-2]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[None-False-min-False-float-1]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[None-False-min-False-float-2]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[None-False-min-False-int-1]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[None-False-min-False-int-2]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[None-False-min-False-float32-1]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[None-False-min-False-float32-2]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[None-False-min-False-bool_-1]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[None-False-min-False-bool_-2]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[None-False-min-True-float-1]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[None-False-min-True-float-2]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[None-False-min-True-int-1]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[None-False-min-True-int-2]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[None-False-min-True-float32-1]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[None-False-min-True-float32-2]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[None-False-max-False-float-1]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[None-False-max-False-float-2]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[None-False-max-False-int-1]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[None-False-max-False-int-2]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[None-False-max-False-float32-1]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[None-False-max-False-float32-2]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[None-False-max-False-bool_-1]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[None-False-max-False-bool_-2]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[None-False-max-True-float-1]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[None-False-max-True-float-2]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[None-False-max-True-int-1]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[None-False-max-True-int-2]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[None-False-max-True-float32-1]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[None-False-max-True-float32-2]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[None-False-mean-False-float-1]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[None-False-mean-False-float-2]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[None-False-mean-False-int-1]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[None-False-mean-False-int-2]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[None-False-mean-False-float32-1]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[None-False-mean-False-float32-2]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[None-False-mean-True-float-1]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[None-False-mean-True-float-2]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[None-False-mean-True-int-1]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[None-False-mean-True-int-2]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[None-False-mean-True-float32-1]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[None-False-mean-True-float32-2]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[None-False-var-False-float-1]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[None-False-var-False-float-2]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[None-False-var-False-int-1]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[None-False-var-False-int-2]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[None-False-var-False-float32-1]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[None-False-var-False-float32-2]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[None-False-var-False-bool_-1]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[None-False-var-False-bool_-2]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[None-False-var-True-float-1]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[None-False-var-True-float-2]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[None-False-var-True-int-1]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[None-False-var-True-int-2]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[None-False-var-True-float32-1]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[None-False-var-True-float32-2]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[None-True-sum-False-float-1]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[None-True-sum-False-float-2]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[None-True-sum-False-int-1]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[None-True-sum-False-int-2]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[None-True-sum-False-float32-1]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[None-True-sum-False-float32-2]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[None-True-sum-False-bool_-1]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[None-True-sum-False-bool_-2]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[None-True-sum-True-float-1]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[None-True-sum-True-float-2]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[None-True-sum-True-int-1]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[None-True-sum-True-int-2]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[None-True-sum-True-float32-1]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[None-True-sum-True-float32-2]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[None-True-sum-True-bool_-1]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[None-True-sum-True-bool_-2]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[None-True-min-False-float-1]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[None-True-min-False-float-2]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[None-True-min-False-int-1]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[None-True-min-False-int-2]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[None-True-min-False-float32-1]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[None-True-min-False-float32-2]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[None-True-min-False-bool_-1]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[None-True-min-False-bool_-2]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[None-True-min-True-float-1]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[None-True-min-True-float-2]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[None-True-min-True-int-1]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[None-True-min-True-int-2]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[None-True-min-True-float32-1]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[None-True-min-True-float32-2]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[None-True-min-True-bool_-1]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[None-True-min-True-bool_-2]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[None-True-max-False-float-1]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[None-True-max-False-float-2]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[None-True-max-False-int-1]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[None-True-max-False-int-2]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[None-True-max-False-float32-1]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[None-True-max-False-float32-2]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[None-True-max-False-bool_-1]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[None-True-max-False-bool_-2]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[None-True-max-True-float-1]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[None-True-max-True-float-2]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[None-True-max-True-int-1]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[None-True-max-True-int-2]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[None-True-max-True-float32-1]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[None-True-max-True-float32-2]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[None-True-max-True-bool_-1]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[None-True-max-True-bool_-2]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[None-True-mean-False-float-1]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[None-True-mean-False-float-2]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[None-True-mean-False-int-1]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[None-True-mean-False-int-2]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[None-True-mean-False-float32-1]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[None-True-mean-False-float32-2]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[None-True-mean-True-float-1]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[None-True-mean-True-float-2]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[None-True-mean-True-int-1]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[None-True-mean-True-int-2]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[None-True-mean-True-float32-1]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[None-True-mean-True-float32-2]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[None-True-var-False-float-1]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[None-True-var-False-float-2]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[None-True-var-False-int-1]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[None-True-var-False-int-2]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[None-True-var-False-float32-1]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[None-True-var-False-float32-2]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[None-True-var-False-bool_-1]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[None-True-var-False-bool_-2]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[None-True-var-True-float-1]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[None-True-var-True-float-2]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[None-True-var-True-int-1]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[None-True-var-True-int-2]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[None-True-var-True-float32-1]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[None-True-var-True-float32-2]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[None-True-var-True-bool_-1]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[None-True-var-True-bool_-2]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[x-False-sum-False-float-1]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[x-False-sum-False-float-2]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[x-False-sum-False-int-1]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[x-False-sum-False-int-2]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[x-False-sum-False-float32-1]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[x-False-sum-False-float32-2]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[x-False-sum-False-bool_-1]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[x-False-sum-False-bool_-2]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[x-False-sum-True-float-1]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[x-False-sum-True-float-2]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[x-False-sum-True-int-1]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[x-False-sum-True-int-2]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[x-False-sum-True-float32-1]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[x-False-sum-True-float32-2]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[x-False-min-False-float-1]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[x-False-min-False-float-2]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[x-False-min-False-int-1]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[x-False-min-False-int-2]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[x-False-min-False-float32-1]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[x-False-min-False-float32-2]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[x-False-min-False-bool_-1]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[x-False-min-False-bool_-2]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[x-False-min-True-float-1]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[x-False-min-True-float-2]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[x-False-min-True-int-1]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[x-False-min-True-int-2]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[x-False-min-True-float32-1]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[x-False-min-True-float32-2]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[x-False-max-False-float-1]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[x-False-max-False-float-2]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[x-False-max-False-int-1]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[x-False-max-False-int-2]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[x-False-max-False-float32-1]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[x-False-max-False-float32-2]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[x-False-max-False-bool_-1]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[x-False-max-False-bool_-2]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[x-False-max-True-float-1]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[x-False-max-True-float-2]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[x-False-max-True-int-1]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[x-False-max-True-int-2]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[x-False-max-True-float32-1]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[x-False-max-True-float32-2]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[x-False-mean-False-float-1]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[x-False-mean-False-float-2]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[x-False-mean-False-int-1]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[x-False-mean-False-int-2]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[x-False-mean-False-float32-1]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[x-False-mean-False-float32-2]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[x-False-mean-True-float-1]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[x-False-mean-True-float-2]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[x-False-mean-True-int-1]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[x-False-mean-True-int-2]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[x-False-mean-True-float32-1]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[x-False-mean-True-float32-2]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[x-False-var-False-float-1]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[x-False-var-False-float-2]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[x-False-var-False-int-1]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[x-False-var-False-int-2]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[x-False-var-False-float32-1]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[x-False-var-False-float32-2]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[x-False-var-False-bool_-1]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[x-False-var-False-bool_-2]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[x-False-var-True-float-1]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[x-False-var-True-float-2]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[x-False-var-True-int-1]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[x-False-var-True-int-2]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[x-False-var-True-float32-1]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[x-False-var-True-float32-2]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[x-True-sum-False-float-1]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[x-True-sum-False-float-2]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[x-True-sum-False-int-1]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[x-True-sum-False-int-2]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[x-True-sum-False-float32-1]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[x-True-sum-False-float32-2]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[x-True-sum-False-bool_-1]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[x-True-sum-False-bool_-2]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[x-True-sum-True-float-1]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[x-True-sum-True-float-2]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[x-True-sum-True-int-1]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[x-True-sum-True-int-2]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[x-True-sum-True-float32-1]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[x-True-sum-True-float32-2]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[x-True-sum-True-bool_-1]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[x-True-sum-True-bool_-2]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[x-True-min-False-float-1]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[x-True-min-False-float-2]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[x-True-min-False-int-1]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[x-True-min-False-int-2]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[x-True-min-False-float32-1]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[x-True-min-False-float32-2]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[x-True-min-False-bool_-1]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[x-True-min-False-bool_-2]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[x-True-min-True-float-1]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[x-True-min-True-float-2]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[x-True-min-True-int-1]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[x-True-min-True-int-2]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[x-True-min-True-float32-1]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[x-True-min-True-float32-2]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[x-True-min-True-bool_-1]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[x-True-min-True-bool_-2]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[x-True-max-False-float-1]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[x-True-max-False-float-2]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[x-True-max-False-int-1]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[x-True-max-False-int-2]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[x-True-max-False-float32-1]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[x-True-max-False-float32-2]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[x-True-max-False-bool_-1]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[x-True-max-False-bool_-2]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[x-True-max-True-float-1]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[x-True-max-True-float-2]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[x-True-max-True-int-1]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[x-True-max-True-int-2]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[x-True-max-True-float32-1]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[x-True-max-True-float32-2]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[x-True-max-True-bool_-1]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[x-True-max-True-bool_-2]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[x-True-mean-False-float-1]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[x-True-mean-False-float-2]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[x-True-mean-False-int-1]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[x-True-mean-False-int-2]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[x-True-mean-False-float32-1]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[x-True-mean-False-float32-2]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[x-True-mean-True-float-1]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[x-True-mean-True-float-2]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[x-True-mean-True-int-1]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[x-True-mean-True-int-2]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[x-True-mean-True-float32-1]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[x-True-mean-True-float32-2]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[x-True-var-False-float-1]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[x-True-var-False-float-2]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[x-True-var-False-int-1]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[x-True-var-False-int-2]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[x-True-var-False-float32-1]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[x-True-var-False-float32-2]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[x-True-var-False-bool_-1]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[x-True-var-False-bool_-2]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[x-True-var-True-float-1]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[x-True-var-True-float-2]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[x-True-var-True-int-1]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[x-True-var-True-int-2]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[x-True-var-True-float32-1]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[x-True-var-True-float32-2]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[x-True-var-True-bool_-1]",
+            "xarray/tests/test_duck_array_ops.py::test_reduce[x-True-var-True-bool_-2]",
+            "xarray/tests/test_duck_array_ops.py::test_argmin_max[x-False-min-False-False-float-1]",
+            "xarray/tests/test_duck_array_ops.py::test_argmin_max[x-False-min-False-False-float-2]",
+            "xarray/tests/test_duck_array_ops.py::test_argmin_max[x-False-min-False-False-int-1]",
+            "xarray/tests/test_duck_array_ops.py::test_argmin_max[x-False-min-False-False-int-2]",
+            "xarray/tests/test_duck_array_ops.py::test_argmin_max[x-False-min-False-False-float32-1]",
+            "xarray/tests/test_duck_array_ops.py::test_argmin_max[x-False-min-False-False-float32-2]",
+            "xarray/tests/test_duck_array_ops.py::test_argmin_max[x-False-min-False-False-bool_-1]",
+            "xarray/tests/test_duck_array_ops.py::test_argmin_max[x-False-min-False-False-bool_-2]",
+            "xarray/tests/test_duck_array_ops.py::test_argmin_max[x-False-min-False-False-str-1]",
+            "xarray/tests/test_duck_array_ops.py::test_argmin_max[x-False-min-False-False-str-2]",
+            "xarray/tests/test_duck_array_ops.py::test_argmin_max[x-False-min-True-False-float-1]",
+            "xarray/tests/test_duck_array_ops.py::test_argmin_max[x-False-min-True-False-float-2]",
+            "xarray/tests/test_duck_array_ops.py::test_argmin_max[x-False-min-True-False-int-1]",
+            "xarray/tests/test_duck_array_ops.py::test_argmin_max[x-False-min-True-False-int-2]",
+            "xarray/tests/test_duck_array_ops.py::test_argmin_max[x-False-min-True-False-float32-1]",
+            "xarray/tests/test_duck_array_ops.py::test_argmin_max[x-False-min-True-False-float32-2]",
+            "xarray/tests/test_duck_array_ops.py::test_argmin_max[x-False-min-True-False-bool_-1]",
+            "xarray/tests/test_duck_array_ops.py::test_argmin_max[x-False-min-True-False-bool_-2]",
+            "xarray/tests/test_duck_array_ops.py::test_argmin_max[x-False-min-True-False-str-1]",
+            "xarray/tests/test_duck_array_ops.py::test_argmin_max[x-False-min-True-False-str-2]",
+            "xarray/tests/test_duck_array_ops.py::test_argmin_max[x-False-max-False-False-float-1]",
+            "xarray/tests/test_duck_array_ops.py::test_argmin_max[x-False-max-False-False-float-2]",
+            "xarray/tests/test_duck_array_ops.py::test_argmin_max[x-False-max-False-False-int-1]",
+            "xarray/tests/test_duck_array_ops.py::test_argmin_max[x-False-max-False-False-int-2]",
+            "xarray/tests/test_duck_array_ops.py::test_argmin_max[x-False-max-False-False-float32-1]",
+            "xarray/tests/test_duck_array_ops.py::test_argmin_max[x-False-max-False-False-float32-2]",
+            "xarray/tests/test_duck_array_ops.py::test_argmin_max[x-False-max-False-False-bool_-1]",
+            "xarray/tests/test_duck_array_ops.py::test_argmin_max[x-False-max-False-False-bool_-2]",
+            "xarray/tests/test_duck_array_ops.py::test_argmin_max[x-False-max-False-False-str-1]",
+            "xarray/tests/test_duck_array_ops.py::test_argmin_max[x-False-max-False-False-str-2]",
+            "xarray/tests/test_duck_array_ops.py::test_argmin_max[x-False-max-True-False-float-1]",
+            "xarray/tests/test_duck_array_ops.py::test_argmin_max[x-False-max-True-False-float-2]",
+            "xarray/tests/test_duck_array_ops.py::test_argmin_max[x-False-max-True-False-int-1]",
+            "xarray/tests/test_duck_array_ops.py::test_argmin_max[x-False-max-True-False-int-2]",
+            "xarray/tests/test_duck_array_ops.py::test_argmin_max[x-False-max-True-False-float32-1]",
+            "xarray/tests/test_duck_array_ops.py::test_argmin_max[x-False-max-True-False-float32-2]",
+            "xarray/tests/test_duck_array_ops.py::test_argmin_max[x-False-max-True-False-bool_-1]",
+            "xarray/tests/test_duck_array_ops.py::test_argmin_max[x-False-max-True-False-bool_-2]",
+            "xarray/tests/test_duck_array_ops.py::test_argmin_max[x-False-max-True-False-str-1]",
+            "xarray/tests/test_duck_array_ops.py::test_argmin_max[x-False-max-True-False-str-2]",
+            "xarray/tests/test_duck_array_ops.py::test_argmin_max[x-True-min-False-True-bool_-1]",
+            "xarray/tests/test_duck_array_ops.py::test_argmin_max[x-True-min-False-True-bool_-2]",
+            "xarray/tests/test_duck_array_ops.py::test_argmin_max[x-True-min-False-True-str-1]",
+            "xarray/tests/test_duck_array_ops.py::test_argmin_max[x-True-min-False-True-str-2]",
+            "xarray/tests/test_duck_array_ops.py::test_argmin_max[x-True-min-False-False-float-1]",
+            "xarray/tests/test_duck_array_ops.py::test_argmin_max[x-True-min-False-False-float-2]",
+            "xarray/tests/test_duck_array_ops.py::test_argmin_max[x-True-min-False-False-int-1]",
+            "xarray/tests/test_duck_array_ops.py::test_argmin_max[x-True-min-False-False-int-2]",
+            "xarray/tests/test_duck_array_ops.py::test_argmin_max[x-True-min-False-False-float32-1]",
+            "xarray/tests/test_duck_array_ops.py::test_argmin_max[x-True-min-False-False-float32-2]",
+            "xarray/tests/test_duck_array_ops.py::test_argmin_max[x-True-min-False-False-bool_-1]",
+            "xarray/tests/test_duck_array_ops.py::test_argmin_max[x-True-min-False-False-bool_-2]",
+            "xarray/tests/test_duck_array_ops.py::test_argmin_max[x-True-min-False-False-str-1]",
+            "xarray/tests/test_duck_array_ops.py::test_argmin_max[x-True-min-False-False-str-2]",
+            "xarray/tests/test_duck_array_ops.py::test_argmin_max[x-True-min-True-True-bool_-1]",
+            "xarray/tests/test_duck_array_ops.py::test_argmin_max[x-True-min-True-True-bool_-2]",
+            "xarray/tests/test_duck_array_ops.py::test_argmin_max[x-True-min-True-True-str-1]",
+            "xarray/tests/test_duck_array_ops.py::test_argmin_max[x-True-min-True-True-str-2]",
+            "xarray/tests/test_duck_array_ops.py::test_argmin_max[x-True-min-True-False-float-1]",
+            "xarray/tests/test_duck_array_ops.py::test_argmin_max[x-True-min-True-False-float-2]",
+            "xarray/tests/test_duck_array_ops.py::test_argmin_max[x-True-min-True-False-int-1]",
+            "xarray/tests/test_duck_array_ops.py::test_argmin_max[x-True-min-True-False-int-2]",
+            "xarray/tests/test_duck_array_ops.py::test_argmin_max[x-True-min-True-False-float32-1]",
+            "xarray/tests/test_duck_array_ops.py::test_argmin_max[x-True-min-True-False-float32-2]",
+            "xarray/tests/test_duck_array_ops.py::test_argmin_max[x-True-min-True-False-bool_-1]",
+            "xarray/tests/test_duck_array_ops.py::test_argmin_max[x-True-min-True-False-bool_-2]",
+            "xarray/tests/test_duck_array_ops.py::test_argmin_max[x-True-min-True-False-str-1]",
+            "xarray/tests/test_duck_array_ops.py::test_argmin_max[x-True-min-True-False-str-2]",
+            "xarray/tests/test_duck_array_ops.py::test_argmin_max[x-True-max-False-True-bool_-1]",
+            "xarray/tests/test_duck_array_ops.py::test_argmin_max[x-True-max-False-True-bool_-2]",
+            "xarray/tests/test_duck_array_ops.py::test_argmin_max[x-True-max-False-True-str-1]",
+            "xarray/tests/test_duck_array_ops.py::test_argmin_max[x-True-max-False-True-str-2]",
+            "xarray/tests/test_duck_array_ops.py::test_argmin_max[x-True-max-False-False-float-1]",
+            "xarray/tests/test_duck_array_ops.py::test_argmin_max[x-True-max-False-False-float-2]",
+            "xarray/tests/test_duck_array_ops.py::test_argmin_max[x-True-max-False-False-int-1]",
+            "xarray/tests/test_duck_array_ops.py::test_argmin_max[x-True-max-False-False-int-2]",
+            "xarray/tests/test_duck_array_ops.py::test_argmin_max[x-True-max-False-False-float32-1]",
+            "xarray/tests/test_duck_array_ops.py::test_argmin_max[x-True-max-False-False-float32-2]",
+            "xarray/tests/test_duck_array_ops.py::test_argmin_max[x-True-max-False-False-bool_-1]",
+            "xarray/tests/test_duck_array_ops.py::test_argmin_max[x-True-max-False-False-bool_-2]",
+            "xarray/tests/test_duck_array_ops.py::test_argmin_max[x-True-max-False-False-str-1]",
+            "xarray/tests/test_duck_array_ops.py::test_argmin_max[x-True-max-False-False-str-2]",
+            "xarray/tests/test_duck_array_ops.py::test_argmin_max[x-True-max-True-True-bool_-1]",
+            "xarray/tests/test_duck_array_ops.py::test_argmin_max[x-True-max-True-True-bool_-2]",
+            "xarray/tests/test_duck_array_ops.py::test_argmin_max[x-True-max-True-True-str-1]",
+            "xarray/tests/test_duck_array_ops.py::test_argmin_max[x-True-max-True-True-str-2]",
+            "xarray/tests/test_duck_array_ops.py::test_argmin_max[x-True-max-True-False-float-1]",
+            "xarray/tests/test_duck_array_ops.py::test_argmin_max[x-True-max-True-False-float-2]",
+            "xarray/tests/test_duck_array_ops.py::test_argmin_max[x-True-max-True-False-int-1]",
+            "xarray/tests/test_duck_array_ops.py::test_argmin_max[x-True-max-True-False-int-2]",
+            "xarray/tests/test_duck_array_ops.py::test_argmin_max[x-True-max-True-False-float32-1]",
+            "xarray/tests/test_duck_array_ops.py::test_argmin_max[x-True-max-True-False-float32-2]",
+            "xarray/tests/test_duck_array_ops.py::test_argmin_max[x-True-max-True-False-bool_-1]",
+            "xarray/tests/test_duck_array_ops.py::test_argmin_max[x-True-max-True-False-bool_-2]",
+            "xarray/tests/test_duck_array_ops.py::test_argmin_max[x-True-max-True-False-str-1]",
+            "xarray/tests/test_duck_array_ops.py::test_argmin_max[x-True-max-True-False-str-2]",
+            "xarray/tests/test_duck_array_ops.py::test_argmin_max[y-False-min-False-False-float-2]",
+            "xarray/tests/test_duck_array_ops.py::test_argmin_max[y-False-min-False-False-int-2]",
+            "xarray/tests/test_duck_array_ops.py::test_argmin_max[y-False-min-False-False-float32-2]",
+            "xarray/tests/test_duck_array_ops.py::test_argmin_max[y-False-min-False-False-bool_-2]",
+            "xarray/tests/test_duck_array_ops.py::test_argmin_max[y-False-min-False-False-str-2]",
+            "xarray/tests/test_duck_array_ops.py::test_argmin_max[y-False-min-True-False-float-2]",
+            "xarray/tests/test_duck_array_ops.py::test_argmin_max[y-False-min-True-False-int-2]",
+            "xarray/tests/test_duck_array_ops.py::test_argmin_max[y-False-min-True-False-float32-2]",
+            "xarray/tests/test_duck_array_ops.py::test_argmin_max[y-False-min-True-False-bool_-2]",
+            "xarray/tests/test_duck_array_ops.py::test_argmin_max[y-False-min-True-False-str-2]",
+            "xarray/tests/test_duck_array_ops.py::test_argmin_max[y-False-max-False-False-float-2]",
+            "xarray/tests/test_duck_array_ops.py::test_argmin_max[y-False-max-False-False-int-2]",
+            "xarray/tests/test_duck_array_ops.py::test_argmin_max[y-False-max-False-False-float32-2]",
+            "xarray/tests/test_duck_array_ops.py::test_argmin_max[y-False-max-False-False-bool_-2]",
+            "xarray/tests/test_duck_array_ops.py::test_argmin_max[y-False-max-False-False-str-2]",
+            "xarray/tests/test_duck_array_ops.py::test_argmin_max[y-False-max-True-False-float-2]",
+            "xarray/tests/test_duck_array_ops.py::test_argmin_max[y-False-max-True-False-int-2]",
+            "xarray/tests/test_duck_array_ops.py::test_argmin_max[y-False-max-True-False-float32-2]",
+            "xarray/tests/test_duck_array_ops.py::test_argmin_max[y-False-max-True-False-bool_-2]",
+            "xarray/tests/test_duck_array_ops.py::test_argmin_max[y-False-max-True-False-str-2]",
+            "xarray/tests/test_duck_array_ops.py::test_argmin_max[y-True-min-False-True-bool_-2]",
+            "xarray/tests/test_duck_array_ops.py::test_argmin_max[y-True-min-False-True-str-2]",
+            "xarray/tests/test_duck_array_ops.py::test_argmin_max[y-True-min-False-False-float-2]",
+            "xarray/tests/test_duck_array_ops.py::test_argmin_max[y-True-min-False-False-int-2]",
+            "xarray/tests/test_duck_array_ops.py::test_argmin_max[y-True-min-False-False-float32-2]",
+            "xarray/tests/test_duck_array_ops.py::test_argmin_max[y-True-min-False-False-bool_-2]",
+            "xarray/tests/test_duck_array_ops.py::test_argmin_max[y-True-min-False-False-str-2]",
+            "xarray/tests/test_duck_array_ops.py::test_argmin_max[y-True-min-True-True-bool_-2]",
+            "xarray/tests/test_duck_array_ops.py::test_argmin_max[y-True-min-True-True-str-2]",
+            "xarray/tests/test_duck_array_ops.py::test_argmin_max[y-True-min-True-False-float-2]",
+            "xarray/tests/test_duck_array_ops.py::test_argmin_max[y-True-min-True-False-int-2]",
+            "xarray/tests/test_duck_array_ops.py::test_argmin_max[y-True-min-True-False-float32-2]",
+            "xarray/tests/test_duck_array_ops.py::test_argmin_max[y-True-min-True-False-bool_-2]",
+            "xarray/tests/test_duck_array_ops.py::test_argmin_max[y-True-min-True-False-str-2]",
+            "xarray/tests/test_duck_array_ops.py::test_argmin_max[y-True-max-False-True-bool_-2]",
+            "xarray/tests/test_duck_array_ops.py::test_argmin_max[y-True-max-False-True-str-2]",
+            "xarray/tests/test_duck_array_ops.py::test_argmin_max[y-True-max-False-False-float-2]",
+            "xarray/tests/test_duck_array_ops.py::test_argmin_max[y-True-max-False-False-int-2]",
+            "xarray/tests/test_duck_array_ops.py::test_argmin_max[y-True-max-False-False-float32-2]",
+            "xarray/tests/test_duck_array_ops.py::test_argmin_max[y-True-max-False-False-bool_-2]",
+            "xarray/tests/test_duck_array_ops.py::test_argmin_max[y-True-max-False-False-str-2]",
+            "xarray/tests/test_duck_array_ops.py::test_argmin_max[y-True-max-True-True-bool_-2]",
+            "xarray/tests/test_duck_array_ops.py::test_argmin_max[y-True-max-True-True-str-2]",
+            "xarray/tests/test_duck_array_ops.py::test_argmin_max[y-True-max-True-False-float-2]",
+            "xarray/tests/test_duck_array_ops.py::test_argmin_max[y-True-max-True-False-int-2]",
+            "xarray/tests/test_duck_array_ops.py::test_argmin_max[y-True-max-True-False-float32-2]",
+            "xarray/tests/test_duck_array_ops.py::test_argmin_max[y-True-max-True-False-bool_-2]",
+            "xarray/tests/test_duck_array_ops.py::test_argmin_max[y-True-max-True-False-str-2]",
+            "xarray/tests/test_duck_array_ops.py::test_argmin_max_error",
+            "xarray/tests/test_duck_array_ops.py::test_isnull[array0]",
+            "xarray/tests/test_duck_array_ops.py::test_isnull[array1]",
+            "xarray/tests/test_duck_array_ops.py::test_isnull[array2]",
+            "xarray/tests/test_duck_array_ops.py::test_isnull[array3]",
+            "xarray/tests/test_duck_array_ops.py::test_isnull[array4]",
+            "xarray/tests/test_duck_array_ops.py::test_isnull_with_dask",
+            "xarray/tests/test_duck_array_ops.py::test_dask_rolling[True-3-0]",
+            "xarray/tests/test_duck_array_ops.py::test_dask_rolling[True-3--1]",
+            "xarray/tests/test_duck_array_ops.py::test_dask_rolling[True-8-0]",
+            "xarray/tests/test_duck_array_ops.py::test_dask_rolling[True-8--1]",
+            "xarray/tests/test_duck_array_ops.py::test_dask_rolling[True-11-0]",
+            "xarray/tests/test_duck_array_ops.py::test_dask_rolling[True-11--1]",
+            "xarray/tests/test_duck_array_ops.py::test_dask_rolling[False-3-0]",
+            "xarray/tests/test_duck_array_ops.py::test_dask_rolling[False-3--1]",
+            "xarray/tests/test_duck_array_ops.py::test_dask_rolling[False-8-0]",
+            "xarray/tests/test_duck_array_ops.py::test_dask_rolling[False-8--1]",
+            "xarray/tests/test_duck_array_ops.py::test_dask_rolling[False-11-0]",
+            "xarray/tests/test_duck_array_ops.py::test_dask_rolling[False-11--1]",
+            "xarray/tests/test_duck_array_ops.py::test_dask_gradient[1-0]",
+            "xarray/tests/test_duck_array_ops.py::test_dask_gradient[1--1]",
+            "xarray/tests/test_duck_array_ops.py::test_dask_gradient[1-1]",
+            "xarray/tests/test_duck_array_ops.py::test_dask_gradient[2-0]",
+            "xarray/tests/test_duck_array_ops.py::test_dask_gradient[2--1]",
+            "xarray/tests/test_duck_array_ops.py::test_dask_gradient[2-1]",
+            "xarray/tests/test_duck_array_ops.py::test_min_count[None-sum-False-float-1]",
+            "xarray/tests/test_duck_array_ops.py::test_min_count[None-sum-False-float-2]",
+            "xarray/tests/test_duck_array_ops.py::test_min_count[None-sum-False-int-1]",
+            "xarray/tests/test_duck_array_ops.py::test_min_count[None-sum-False-int-2]",
+            "xarray/tests/test_duck_array_ops.py::test_min_count[None-sum-False-float32-1]",
+            "xarray/tests/test_duck_array_ops.py::test_min_count[None-sum-False-float32-2]",
+            "xarray/tests/test_duck_array_ops.py::test_min_count[None-sum-False-bool_-1]",
+            "xarray/tests/test_duck_array_ops.py::test_min_count[None-sum-False-bool_-2]",
+            "xarray/tests/test_duck_array_ops.py::test_min_count[None-sum-True-float-1]",
+            "xarray/tests/test_duck_array_ops.py::test_min_count[None-sum-True-float-2]",
+            "xarray/tests/test_duck_array_ops.py::test_min_count[None-sum-True-int-1]",
+            "xarray/tests/test_duck_array_ops.py::test_min_count[None-sum-True-int-2]",
+            "xarray/tests/test_duck_array_ops.py::test_min_count[None-sum-True-float32-1]",
+            "xarray/tests/test_duck_array_ops.py::test_min_count[None-sum-True-float32-2]",
+            "xarray/tests/test_duck_array_ops.py::test_min_count[None-sum-True-bool_-1]",
+            "xarray/tests/test_duck_array_ops.py::test_min_count[None-sum-True-bool_-2]",
+            "xarray/tests/test_duck_array_ops.py::test_min_count[None-prod-False-float-1]",
+            "xarray/tests/test_duck_array_ops.py::test_min_count[None-prod-False-float-2]",
+            "xarray/tests/test_duck_array_ops.py::test_min_count[None-prod-False-int-1]",
+            "xarray/tests/test_duck_array_ops.py::test_min_count[None-prod-False-int-2]",
+            "xarray/tests/test_duck_array_ops.py::test_min_count[None-prod-False-float32-1]",
+            "xarray/tests/test_duck_array_ops.py::test_min_count[None-prod-False-float32-2]",
+            "xarray/tests/test_duck_array_ops.py::test_min_count[None-prod-False-bool_-1]",
+            "xarray/tests/test_duck_array_ops.py::test_min_count[None-prod-False-bool_-2]",
+            "xarray/tests/test_duck_array_ops.py::test_min_count[None-prod-True-float-1]",
+            "xarray/tests/test_duck_array_ops.py::test_min_count[None-prod-True-float-2]",
+            "xarray/tests/test_duck_array_ops.py::test_min_count[None-prod-True-int-1]",
+            "xarray/tests/test_duck_array_ops.py::test_min_count[None-prod-True-int-2]",
+            "xarray/tests/test_duck_array_ops.py::test_min_count[None-prod-True-float32-1]",
+            "xarray/tests/test_duck_array_ops.py::test_min_count[None-prod-True-float32-2]",
+            "xarray/tests/test_duck_array_ops.py::test_min_count[None-prod-True-bool_-1]",
+            "xarray/tests/test_duck_array_ops.py::test_min_count[None-prod-True-bool_-2]",
+            "xarray/tests/test_duck_array_ops.py::test_min_count[x-sum-False-float-1]",
+            "xarray/tests/test_duck_array_ops.py::test_min_count[x-sum-False-float-2]",
+            "xarray/tests/test_duck_array_ops.py::test_min_count[x-sum-False-int-1]",
+            "xarray/tests/test_duck_array_ops.py::test_min_count[x-sum-False-int-2]",
+            "xarray/tests/test_duck_array_ops.py::test_min_count[x-sum-False-float32-1]",
+            "xarray/tests/test_duck_array_ops.py::test_min_count[x-sum-False-float32-2]",
+            "xarray/tests/test_duck_array_ops.py::test_min_count[x-sum-False-bool_-1]",
+            "xarray/tests/test_duck_array_ops.py::test_min_count[x-sum-False-bool_-2]",
+            "xarray/tests/test_duck_array_ops.py::test_min_count[x-sum-True-float-1]",
+            "xarray/tests/test_duck_array_ops.py::test_min_count[x-sum-True-float-2]",
+            "xarray/tests/test_duck_array_ops.py::test_min_count[x-sum-True-int-1]",
+            "xarray/tests/test_duck_array_ops.py::test_min_count[x-sum-True-int-2]",
+            "xarray/tests/test_duck_array_ops.py::test_min_count[x-sum-True-float32-1]",
+            "xarray/tests/test_duck_array_ops.py::test_min_count[x-sum-True-float32-2]",
+            "xarray/tests/test_duck_array_ops.py::test_min_count[x-sum-True-bool_-1]",
+            "xarray/tests/test_duck_array_ops.py::test_min_count[x-sum-True-bool_-2]",
+            "xarray/tests/test_duck_array_ops.py::test_min_count[x-prod-False-float-1]",
+            "xarray/tests/test_duck_array_ops.py::test_min_count[x-prod-False-float-2]",
+            "xarray/tests/test_duck_array_ops.py::test_min_count[x-prod-False-int-1]",
+            "xarray/tests/test_duck_array_ops.py::test_min_count[x-prod-False-int-2]",
+            "xarray/tests/test_duck_array_ops.py::test_min_count[x-prod-False-float32-1]",
+            "xarray/tests/test_duck_array_ops.py::test_min_count[x-prod-False-float32-2]",
+            "xarray/tests/test_duck_array_ops.py::test_min_count[x-prod-False-bool_-1]",
+            "xarray/tests/test_duck_array_ops.py::test_min_count[x-prod-False-bool_-2]",
+            "xarray/tests/test_duck_array_ops.py::test_min_count[x-prod-True-float-1]",
+            "xarray/tests/test_duck_array_ops.py::test_min_count[x-prod-True-float-2]",
+            "xarray/tests/test_duck_array_ops.py::test_min_count[x-prod-True-int-1]",
+            "xarray/tests/test_duck_array_ops.py::test_min_count[x-prod-True-int-2]",
+            "xarray/tests/test_duck_array_ops.py::test_min_count[x-prod-True-float32-1]",
+            "xarray/tests/test_duck_array_ops.py::test_min_count[x-prod-True-float32-2]",
+            "xarray/tests/test_duck_array_ops.py::test_min_count[x-prod-True-bool_-1]",
+            "xarray/tests/test_duck_array_ops.py::test_min_count[x-prod-True-bool_-2]",
+            "xarray/tests/test_duck_array_ops.py::test_min_count_nd[sum-True-float]",
+            "xarray/tests/test_duck_array_ops.py::test_min_count_nd[sum-True-int]",
+            "xarray/tests/test_duck_array_ops.py::test_min_count_nd[sum-True-float32]",
+            "xarray/tests/test_duck_array_ops.py::test_min_count_nd[sum-True-bool_]",
+            "xarray/tests/test_duck_array_ops.py::test_min_count_nd[prod-True-float]",
+            "xarray/tests/test_duck_array_ops.py::test_min_count_nd[prod-True-int]",
+            "xarray/tests/test_duck_array_ops.py::test_min_count_nd[prod-True-float32]",
+            "xarray/tests/test_duck_array_ops.py::test_min_count_nd[prod-True-bool_]",
+            "xarray/tests/test_duck_array_ops.py::test_min_count_dataset[sum]",
+            "xarray/tests/test_duck_array_ops.py::test_min_count_dataset[prod]",
+            "xarray/tests/test_duck_array_ops.py::test_multiple_dims[sum-False-False-float]",
+            "xarray/tests/test_duck_array_ops.py::test_multiple_dims[sum-False-False-int]",
+            "xarray/tests/test_duck_array_ops.py::test_multiple_dims[sum-False-False-float32]",
+            "xarray/tests/test_duck_array_ops.py::test_multiple_dims[sum-False-False-bool_]",
+            "xarray/tests/test_duck_array_ops.py::test_multiple_dims[sum-False-True-float]",
+            "xarray/tests/test_duck_array_ops.py::test_multiple_dims[sum-False-True-int]",
+            "xarray/tests/test_duck_array_ops.py::test_multiple_dims[sum-False-True-float32]",
+            "xarray/tests/test_duck_array_ops.py::test_multiple_dims[sum-False-True-bool_]",
+            "xarray/tests/test_duck_array_ops.py::test_multiple_dims[sum-True-False-float]",
+            "xarray/tests/test_duck_array_ops.py::test_multiple_dims[sum-True-False-int]",
+            "xarray/tests/test_duck_array_ops.py::test_multiple_dims[sum-True-False-float32]",
+            "xarray/tests/test_duck_array_ops.py::test_multiple_dims[sum-True-False-bool_]",
+            "xarray/tests/test_duck_array_ops.py::test_multiple_dims[sum-True-True-float]",
+            "xarray/tests/test_duck_array_ops.py::test_multiple_dims[sum-True-True-int]",
+            "xarray/tests/test_duck_array_ops.py::test_multiple_dims[sum-True-True-float32]",
+            "xarray/tests/test_duck_array_ops.py::test_multiple_dims[sum-True-True-bool_]",
+            "xarray/tests/test_duck_array_ops.py::test_multiple_dims[prod-False-False-float]",
+            "xarray/tests/test_duck_array_ops.py::test_multiple_dims[prod-False-False-int]",
+            "xarray/tests/test_duck_array_ops.py::test_multiple_dims[prod-False-False-float32]",
+            "xarray/tests/test_duck_array_ops.py::test_multiple_dims[prod-False-False-bool_]",
+            "xarray/tests/test_duck_array_ops.py::test_multiple_dims[prod-False-True-float]",
+            "xarray/tests/test_duck_array_ops.py::test_multiple_dims[prod-False-True-int]",
+            "xarray/tests/test_duck_array_ops.py::test_multiple_dims[prod-False-True-float32]",
+            "xarray/tests/test_duck_array_ops.py::test_multiple_dims[prod-False-True-bool_]",
+            "xarray/tests/test_duck_array_ops.py::test_multiple_dims[prod-True-False-float]",
+            "xarray/tests/test_duck_array_ops.py::test_multiple_dims[prod-True-False-int]",
+            "xarray/tests/test_duck_array_ops.py::test_multiple_dims[prod-True-False-float32]",
+            "xarray/tests/test_duck_array_ops.py::test_multiple_dims[prod-True-False-bool_]",
+            "xarray/tests/test_duck_array_ops.py::test_multiple_dims[prod-True-True-float]",
+            "xarray/tests/test_duck_array_ops.py::test_multiple_dims[prod-True-True-int]",
+            "xarray/tests/test_duck_array_ops.py::test_multiple_dims[prod-True-True-float32]",
+            "xarray/tests/test_duck_array_ops.py::test_multiple_dims[prod-True-True-bool_]",
+            "xarray/tests/test_duck_array_ops.py::test_docs",
+            "xarray/tests/test_duck_array_ops.py::test_datetime_to_numeric_datetime64",
+            "xarray/tests/test_duck_array_ops.py::test_datetime_to_numeric_cftime",
+            "xarray/tests/test_duck_array_ops.py::test_datetime_to_numeric_potential_overflow",
+            "xarray/tests/test_duck_array_ops.py::test_py_timedelta_to_float",
+            "xarray/tests/test_duck_array_ops.py::test_np_timedelta64_to_float[td0-86400000000000.0]",
+            "xarray/tests/test_duck_array_ops.py::test_np_timedelta64_to_float[td1-1.0]",
+            "xarray/tests/test_duck_array_ops.py::test_pd_timedelta_to_float[td0-86400000000000.0]",
+            "xarray/tests/test_duck_array_ops.py::test_pd_timedelta_to_float[td1-1.0]",
+            "xarray/tests/test_duck_array_ops.py::test_timedelta_to_numeric[td0]",
+            "xarray/tests/test_duck_array_ops.py::test_timedelta_to_numeric[td1]",
+            "xarray/tests/test_duck_array_ops.py::test_timedelta_to_numeric[td2]",
+            "xarray/tests/test_duck_array_ops.py::test_timedelta_to_numeric[1",
+            "xarray/tests/test_duck_array_ops.py::test_least_squares[True-True]",
+            "xarray/tests/test_duck_array_ops.py::test_least_squares[True-False]",
+            "xarray/tests/test_duck_array_ops.py::test_least_squares[False-True]",
+            "xarray/tests/test_duck_array_ops.py::test_least_squares[False-False]"
+          ]
+          PASS_EOF
+          cat <<'DIR_EOF' > "$TEST_DIRECTIVES_PATH"
+          [
+            "xarray/tests/test_duck_array_ops.py"
+          ]
+          DIR_EOF
+          export FAIL_TO_PASS_PATH PASS_TO_PASS_PATH TEST_DIRECTIVES_PATH TEST_RESULTS_PATH
+          set +e
+          python -c 'import textwrap; code = "import json\nimport os\nimport re\nimport shlex\nimport subprocess\nimport sys\n\ndef _load(key):\n    path = os.environ.get(\"{}_PATH\".format(key))\n    if path and os.path.exists(path):\n        with open(path, \"r\", encoding=\"utf-8\") as handle:\n            raw = handle.read()\n    else:\n        raw = os.environ.get(key, \"[]\")\n    try:\n        return json.loads(raw)\n    except Exception:\n        return []\n\ntest_cmd = os.environ[\"TEST_CMD\"]\nresults_path = os.environ.get(\"TEST_RESULTS_PATH\", \"/tmp/test_results.txt\")\nlog_parts = []\n\ndef log(message):\n    print(message, flush=True)\n    log_parts.append(message + \"\\n\")\n\ndef _as_list(value):\n    if isinstance(value, list):\n        return value\n    if isinstance(value, str):\n        return [value]\n    return []\n\ndef _unique_preserve(values):\n    seen = set()\n    out = []\n    for value in values:\n        if value in seen:\n            continue\n        seen.add(value)\n        out.append(value)\n    return out\n\ndef _parent_test_id(value):\n    if \"[\" in value:\n        return value.split(\"[\", 1)[0].strip()\n    return value.strip()\n\ndef _format_preview(tests, limit=5):\n    shown = [shlex.quote(t) for t in tests[:limit]]\n    if len(tests) > limit:\n        shown.append(\"...\")\n    return \" \".join(shown)\n\ndef _run_cmd(label, tests, chunk_index, chunk_total, attempt):\n    cmd = \" \".join([test_cmd] + [shlex.quote(t) for t in tests])\n    preview = _format_preview(tests)\n    print(\n        \"Running {} chunk {}/{} attempt {} ({} tests): {} {}\".format(\n            label, chunk_index, chunk_total, attempt, len(tests), test_cmd, preview\n        ),\n        flush=True,\n    )\n    result = subprocess.run(\n        cmd,\n        shell=True,\n        stdout=subprocess.PIPE,\n        stderr=subprocess.PIPE,\n        universal_newlines=True,\n    )\n    stdout = result.stdout or \"\"\n    stderr = result.stderr or \"\"\n    if stdout:\n        print(stdout, end=\"\" if stdout.endswith(\"\\n\") else \"\\n\")\n    if stderr:\n        print(stderr, end=\"\" if stderr.endswith(\"\\n\") else \"\\n\", file=sys.stderr)\n    if stdout:\n        log_parts.append(stdout)\n    if stderr:\n        log_parts.append(stderr)\n    return result.returncode == 0, stdout, stderr\n\ndef run_tests(label, tests):\n    tests = _unique_preserve(_as_list(tests))\n    if not tests:\n        print(\"No tests for {}\".format(label))\n        return True\n\n    chunk_size = 25 if label == \"FAIL_TO_PASS\" else 100\n    chunks = [tests[i:i + chunk_size] for i in range(0, len(tests), chunk_size)]\n\n    for chunk_index, chunk in enumerate(chunks, start=1):\n        ok, stdout, stderr = _run_cmd(label, chunk, chunk_index, len(chunks), 1)\n        if ok:\n            continue\n\n        output = \"{}\\n{}\".format(stdout, stderr)\n        if \"ERROR: not found:\" in output:\n            parent_tests = _unique_preserve([_parent_test_id(test) for test in chunk if test])\n            if parent_tests and parent_tests != chunk:\n                log(\n                    \"Retrying {} chunk {}/{} with parent test ids due to missing node IDs\".format(\n                        label, chunk_index, len(chunks)\n                    )\n                )\n                retry_ok, _, _ = _run_cmd(\n                    label,\n                    parent_tests,\n                    chunk_index,\n                    len(chunks),\n                    2,\n                )\n                if retry_ok:\n                    continue\n        return False\n\n    return True\n\ndef _has_unbalanced_brackets(value):\n    depth = 0\n    escaped = False\n    for ch in value:\n        if escaped:\n            escaped = False\n            continue\n        if ch == \"\\\\\":\n            escaped = True\n            continue\n        if ch == \"[\":\n            depth += 1\n        elif ch == \"]\":\n            depth -= 1\n            if depth < 0:\n                return True\n    return depth != 0\n\ndef _has_space_outside_brackets(value):\n    depth = 0\n    for ch in value:\n        if ch == \"[\":\n            depth += 1\n        elif ch == \"]\":\n            depth = max(depth - 1, 0)\n        elif ch.isspace() and depth == 0:\n            return True\n    return False\n\ndef _looks_like_test_id(value):\n    return any(x in value for x in (\"::\", \"/\", \".py\"))\n\ndef _merge_bracket_fragments(labels):\n    merged = []\n    buffer = None\n    for raw in labels:\n        if not isinstance(raw, str):\n            continue\n        value = raw.strip()\n        if not value:\n            continue\n        if buffer is not None:\n            if _looks_like_test_id(value):\n                log(\"Deferring bracket-fragmented test for repair: {}\".format(repr(buffer)))\n                merged.append(buffer)\n                buffer = None\n                # Treat current value as a new candidate.\n            else:\n                buffer = buffer + \" \" + value\n                if not _has_unbalanced_brackets(buffer):\n                    merged.append(buffer)\n                    buffer = None\n                continue\n        if _has_unbalanced_brackets(value):\n            buffer = value\n            continue\n        merged.append(value)\n    if buffer is not None:\n        log(\"Deferring bracket-fragmented test for repair: {}\".format(repr(buffer)))\n        merged.append(buffer)\n    return merged\n\ndef normalize_labels(labels):\n    labels = _as_list(labels)\n    normalized = []\n    for label in labels:\n        if not isinstance(label, str):\n            continue\n        value = label.strip()\n        if not value:\n            continue\n        m = re.match(r\"^([^\\s]+)\\s+\\(([^)]+)\\)$\", value)\n        if m:\n            test_name, path = m.group(1), m.group(2).strip()\n            if path.endswith(\"::\" + test_name) or path.endswith(\".\" + test_name):\n                normalized.append(path)\n            elif re.search(r\"[\\\\/]\", path) or path.endswith(\".py\") or \"::\" in path:\n                normalized.append(\"{}::{}\".format(path, test_name))\n            else:\n                normalized.append(\"{}.{}\".format(path, test_name))\n        else:\n            normalized.append(value)\n    return normalized\n\ndef prefilter_tests(label, tests):\n    tests = _merge_bracket_fragments(_as_list(tests))\n    valid = []\n    skipped = []\n    for test in tests:\n        if not isinstance(test, str):\n            continue\n        value = test.strip()\n        if not value:\n            continue\n        if _has_unbalanced_brackets(value):\n            fallback = value.split(\"[\", 1)[0].strip() if \"[\" in value else \"\"\n            if fallback and not _has_space_outside_brackets(fallback):\n                log(\"Falling back to parent test for {}: {} -> {}\".format(label, repr(value), repr(fallback)))\n                value = fallback\n            else:\n                skipped.append(value)\n                continue\n        if label == \"PASS_TO_PASS\" and \"[\" in value:\n            parent = value.split(\"[\", 1)[0].strip()\n            if parent:\n                value = parent\n        if _has_space_outside_brackets(value):\n            skipped.append(value)\n            continue\n        valid.append(value)\n    if skipped:\n        skipped_str = \", \".join(repr(x) for x in skipped)\n        log(\"Skipping {} non-test entries: {}\".format(label, skipped_str))\n    return _unique_preserve(valid)\n\nfail_to_pass = prefilter_tests(\n    \"FAIL_TO_PASS\",\n    normalize_labels(_load(\"FAIL_TO_PASS\")),\n)\npass_to_pass = prefilter_tests(\n    \"PASS_TO_PASS\",\n    normalize_labels(_load(\"PASS_TO_PASS\")),\n)\ntest_directives = prefilter_tests(\"TEST_DIRECTIVES\", _load(\"TEST_DIRECTIVES\"))\n\nuse_fail_pass = bool(fail_to_pass or pass_to_pass)\n\nexit_code = 0\ntry:\n    if use_fail_pass:\n        if not run_tests(\"FAIL_TO_PASS\", fail_to_pass):\n            exit_code = 1\n        elif not run_tests(\"PASS_TO_PASS\", pass_to_pass):\n            exit_code = 1\n    else:\n        if not run_tests(\"TEST_DIRECTIVES\", test_directives):\n            exit_code = 1\nfinally:\n    try:\n        with open(results_path, \"w\", encoding=\"utf-8\") as handle:\n            handle.write(\"\".join(log_parts))\n    except Exception as exc:\n        print(\"Failed to write test results:\", exc)\nsys.exit(exit_code)"; exec(textwrap.dedent(code))'
+          TEST_EXIT=$?
+          echo "TEST_EXIT=$TEST_EXIT"
+          export TEST_EXIT
+          python -c 'import textwrap; code = "import json\nimport os\nimport sys\nimport urllib.request\n\nurl = os.environ.get(\n    \"WEBHOOK_URL\",\n    \"https://aicodinggym.com/api/webhooks/github\",\n)\ncommit_id = os.environ.get(\"GITHUB_SHA\", \"\")\nbranch_name = os.environ.get(\"GITHUB_REF_NAME\", \"\")\ntest_exit = int(os.environ.get(\"TEST_EXIT\", \"1\"))\nstatus = \"COMPLETED\" if test_exit == 0 else \"FAILED\"\npassed = test_exit == 0\npassed_tests = 1 if passed else 0\ntotal_tests = 1\nfailed_tests = 0 if passed else 1\nresults_path = os.environ.get(\"TEST_RESULTS_PATH\", \"/tmp/test_results.txt\")\ndetails = \"\"\nif os.path.exists(results_path):\n    try:\n        with open(results_path, \"r\", encoding=\"utf-8\") as handle:\n            details = handle.read()\n    except Exception as exc:\n        print(\"Webhook: failed to load test logs:\", exc)\n\nif not url or not commit_id or not branch_name:\n    print(\"Webhook: missing url/commit/branch; skipping.\")\n    sys.exit(0)\npayload = {\n    \"commit_id\": commit_id,\n    \"branch_name\": branch_name,\n    \"status\": status,\n    \"passed\": passed,\n    \"passed_tests\": passed_tests,\n    \"total_tests\": total_tests,\n    \"failed_tests\": failed_tests,\n    \"details\": details,\n}\ndata = json.dumps(payload).encode(\"utf-8\")\nreq = urllib.request.Request(\n    url, data=data,\n    headers={\"Content-Type\": \"application/json\"},\n    method=\"POST\",\n)\ntry:\n    with urllib.request.urlopen(req, timeout=10) as resp:\n        body = resp.read().decode(\"utf-8\")\n        print(\"Webhook response:\", body)\nexcept Exception as exc:\n    print(\"Webhook failed:\", exc)"; exec(textwrap.dedent(code))'
+          exit "$TEST_EXIT"
