@@ -5,16 +5,7 @@ RUN apt-get update && apt-get install -y \
     git build-essential libffi-dev libssl-dev \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
-# Working directory
-RUN mkdir -p /app
-WORKDIR /app
-
-# Clone repo (only needed commit, not full history)
-RUN git clone --depth 1 https://github.com/pallets/flask.git . && \
-    git fetch --depth 1 origin 182ce3dd15dfa3537391c3efaf9c3ff407d134d4 && \
-    git checkout 182ce3dd15dfa3537391c3efaf9c3ff407d134d4
-
-# Create conda environment
+# Create conda environment (dependencies only — repo installed at runtime from checkout)
 RUN cat <<'ENV_EOF' > /tmp/environment.yml
 name: testbed
 channels:
@@ -109,16 +100,6 @@ ENV_EOF
 RUN conda env create --file /tmp/environment.yml && \
     conda clean -afy && \
     rm /tmp/environment.yml
-
-# Install repo and dependencies
-RUN /bin/bash -c "source activate testbed && \
-    git fetch --tags "https://github.com/$REPO.git" || true
-TARGET_TIMESTAMP=$(git show -s --format=%ci "$BASE_COMMIT")
-git tag -l | while read tag; do TAG_COMMIT=$(git rev-list -n 1 "$tag"); TAG_TIME=$(git show -s --format=%ci "$TAG_COMMIT"); if [[ "$TAG_TIME" > "$TARGET_TIMESTAMP" ]]; then git tag -d "$tag"; fi; done
-python -m pip install -e ."
-
-# Reset to base commit (code will be patched at runtime)
-RUN git checkout 7ee9ceb71e868944a46e1ff00b506772a53a4f1d || true
 
 # Environment variables
 
