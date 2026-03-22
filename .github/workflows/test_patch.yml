@@ -13,6 +13,11 @@ jobs:
   test:
     runs-on: ubuntu-22.04
     timeout-minutes: 240
+    container:
+      image: ghcr.io/aicodinggym/problemset-docker/${{ github.ref_name }}:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
     env:
       INSTANCE_ID: "instance_ansible__ansible-9759e0ca494de1fd5fc2df2c5d11c57adbe6007c-v1055803c3a812189a1133297f7f5468579283f86"
       REPO: "ansible/ansible"
@@ -21,115 +26,24 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Pull or build Docker image
-        run: |
-          IMAGE="ghcr.io/aicodinggym/problemset-docker/${{ github.ref_name }}:latest"
-          echo "Trying pre-built image: $IMAGE"
-          if docker pull "$IMAGE" 2>/dev/null; then
-            docker tag "$IMAGE" swebench-test
-            echo "Using pre-built image (skipped build)"
-          else
-            echo "Pre-built image not found, building from scratch..."
-            docker build -t swebench-test -f .swebench/Dockerfile .
-          fi
-
       - name: Prepare workspace
         run: |
-          git fetch origin $BASE_COMMIT --depth=1
-          mkdir -p /tmp/swebench-workspace
-          git diff $BASE_COMMIT HEAD -- ':!.swebench' ':!.github' ':!.devcontainer' ':!.vscode' ':!submit.sh' ':!.gitignore' ':!problem_statement.md' ':!hints_text.md' ':!CLAUDE.md' ':!AGENTS.md' ':!.claudeignore' ':!.copilotignore' ':!.cursorignore' ':!.cursorrules' > /tmp/swebench-workspace/patch.diff || true
-          echo "Patch size: $(wc -c < /tmp/swebench-workspace/patch.diff) bytes"
-          cp .swebench/run_script.sh /tmp/swebench-workspace/run_script.sh
-          cp .swebench/parser.py /tmp/swebench-workspace/parser.py
-          cp .swebench/entrypoint.sh /tmp/swebench-workspace/entrypoint.sh
-          chmod +x /tmp/swebench-workspace/run_script.sh
-          chmod +x /tmp/swebench-workspace/entrypoint.sh
+          mkdir -p /workspace
+          git config --global --add safe.directory $GITHUB_WORKSPACE
+          git fetch origin $BASE_COMMIT --depth=1 || true
+          git diff $BASE_COMMIT HEAD -- ':!.swebench' ':!.github' ':!.devcontainer' ':!.vscode' ':!submit.sh' ':!.gitignore' ':!problem_statement.md' ':!hints_text.md' ':!CLAUDE.md' ':!AGENTS.md' ':!.claudeignore' ':!.copilotignore' ':!.cursorignore' ':!.cursorrules' > /workspace/patch.diff || true
+          echo "Patch size: $(wc -c < /workspace/patch.diff) bytes"
+          cp .swebench/run_script.sh /workspace/run_script.sh
+          cp .swebench/parser.py /workspace/parser.py
+          cp .swebench/entrypoint.sh /workspace/entrypoint.sh
+          chmod +x /workspace/run_script.sh /workspace/entrypoint.sh
 
-      - name: Run tests in Docker
+      - name: Run tests
         id: run_tests
         run: |
           set +e
-          docker run --rm \
-            --entrypoint /bin/bash \
-            -e BASE_COMMIT=$BASE_COMMIT \
-            -v /tmp/swebench-workspace:/workspace \
-            swebench-test \
-            /workspace/entrypoint.sh
+          /workspace/entrypoint.sh
           TEST_EXIT=$?
           echo "TEST_EXIT=$TEST_EXIT" >> "$GITHUB_ENV"
           echo "test_exit=$TEST_EXIT" >> "$GITHUB_OUTPUT"
-
-          echo ''
-          echo "===== TEST RESULTS ====="
-          if [ -f /tmp/swebench-workspace/output.json ]; then
-            cat /tmp/swebench-workspace/output.json
-          else
-            echo "No parsed output found."
-          fi
-          echo "========================"
           exit $TEST_EXIT
-
-      - name: Send webhook notification
-        if: always()
-        env:
-          WEBHOOK_URL: "https://aicodinggym.com/api/webhooks/github"
-        run: |
-          python3 << 'WEBHOOK_EOF'
-          import json, os, sys, urllib.request
-
-          url = os.environ.get("WEBHOOK_URL", "")
-          commit_id = os.environ.get("GITHUB_SHA", "")
-          branch_name = os.environ.get("GITHUB_REF_NAME", "")
-          test_exit = int(os.environ.get("TEST_EXIT", "1"))
-          status = "COMPLETED" if test_exit == 0 else "FAILED"
-          passed = test_exit == 0
-
-          details = ''
-          try:
-              with open('/tmp/swebench-workspace/stdout.log') as f:
-                  details = f.read()
-          except Exception:
-              pass
-
-          passed_tests = 0
-          failed_tests = 0
-          total_tests = 0
-          try:
-              with open('/tmp/swebench-workspace/output.json') as f:
-                  data = json.load(f)
-              tests = data.get('tests', [])
-              total_tests = len(tests)
-              passed_tests = sum(1 for t in tests if t.get('status') == 'PASSED')
-              failed_tests = sum(1 for t in tests if t.get('status') == 'FAILED')
-          except Exception:
-              total_tests = 1
-              passed_tests = 1 if passed else 0
-              failed_tests = 0 if passed else 1
-
-          if not url or not commit_id or not branch_name:
-              print("Webhook: missing url/commit/branch; skipping.")
-              sys.exit(0)
-
-          payload = {
-              "commit_id": commit_id,
-              "branch_name": branch_name,
-              "status": status,
-              "passed": passed,
-              "passed_tests": passed_tests,
-              "total_tests": total_tests,
-              "failed_tests": failed_tests,
-              "details": details[:50000] if details else "",
-          }
-          data_bytes = json.dumps(payload).encode("utf-8")
-          req = urllib.request.Request(
-              url, data=data_bytes,
-              headers={"Content-Type": "application/json"},
-              method="POST",
-          )
-          try:
-              with urllib.request.urlopen(req, timeout=10) as resp:
-                  body = resp.read().decode("utf-8")
-                  print("Webhook response:", body)
-          except Exception as exc:
-              print("Webhook failed:", exc)
-          WEBHOOK_EOF
