@@ -29,4 +29,3 @@ jobs:
             -f .swebench/Dockerfile .
           echo "Pushing: $IMAGE"
           docker push "$IMAGE"
-          echo "Done: $IMAGE"
