@@ -1,9 +1,18 @@
-FROM continuumio/miniconda3:latest
+FROM ubuntu:22.04
 
-# System dependencies
+ENV DEBIAN_FRONTEND=noninteractive
+
+# System dependencies (matches GHA ubuntu-22.04 runner)
 RUN apt-get update && apt-get install -y \
-    git build-essential libffi-dev libssl-dev \
+    git build-essential libffi-dev libssl-dev curl wget ca-certificates \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
+
+# Install Miniconda (same as conda-incubator/setup-miniconda on GHA)
+RUN wget -q https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh -O /tmp/miniconda.sh && \
+    bash /tmp/miniconda.sh -b -p /opt/conda && \
+    rm /tmp/miniconda.sh
+ENV PATH="/opt/conda/bin:$PATH"
+RUN conda init bash && conda config --add channels conda-forge
 
 # Create conda environment (dependencies only — repo installed at runtime from checkout)
 RUN cat <<'ENV_EOF' > /tmp/environment.yml
