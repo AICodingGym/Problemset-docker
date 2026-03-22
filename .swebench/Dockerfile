@@ -5,16 +5,7 @@ RUN apt-get update && apt-get install -y \
     git build-essential libffi-dev libssl-dev \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
-# Working directory
-RUN mkdir -p /app
-WORKDIR /app
-
-# Clone repo (only needed commit, not full history)
-RUN git clone --depth 1 https://github.com/matplotlib/matplotlib.git . && \
-    git fetch --depth 1 origin 0849036fd992a2dd133a0cffc3f84f58ccf1840f && \
-    git checkout 0849036fd992a2dd133a0cffc3f84f58ccf1840f
-
-# Create conda environment
+# Create conda environment (dependencies only — repo installed at runtime from checkout)
 RUN cat <<'ENV_EOF' > /tmp/environment.yml
 name: testbed
 channels:
@@ -367,19 +358,6 @@ ENV_EOF
 RUN conda env create --file /tmp/environment.yml && \
     conda clean -afy && \
     rm /tmp/environment.yml
-
-# Install repo and dependencies
-RUN cat <<'INSTALL_EOF' > /tmp/install.sh
-#!/bin/bash
-set -e
-source activate testbed
-cd /app
-git fetch --tags "https://github.com/matplotlib/matplotlib.git" || true
-python -m pip install -e . || python -m pip install . || true
-INSTALL_EOF
-RUN chmod +x /tmp/install.sh && /tmp/install.sh && rm /tmp/install.sh
-# Reset to base commit (code will be patched at runtime)
-RUN git checkout 5ca694b38d861c0e24cd8743753427dda839b90b || true
 
 # Environment variables
 
