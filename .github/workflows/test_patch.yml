@@ -12,48 +12,126 @@ permissions:
 jobs:
   test:
     runs-on: ubuntu-22.04
-    timeout-minutes: 240
     container:
       image: ghcr.io/aicodinggym/problemset-docker/${{ github.ref_name }}:latest
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
+    timeout-minutes: 240
     env:
       INSTANCE_ID: "pydata__xarray-3151"
       REPO: "pydata/xarray"
       VERSION: "0.12"
       BASE_COMMIT: "118f4d996e7711c9aced916e6049af9f28d5ec66"
       ENV_SETUP_COMMIT: "1c198a191127c601d091213c4b3292a8bb3054e1"
-      TEST_CMD: "pytest -rA"
-      TEST_FILES: "xarray/tests/test_combine.py"
+      TEST_CMD: 'pytest -rA'
+      TEST_FILES: 'xarray/tests/test_combine.py'
       CONDA_ENV: "testbed"
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          fetch-tags: false
 
-      - name: Setup and run tests
-        shell: bash
+      - name: Git Safe Directory
+        shell: "bash -l {0}"
         run: |
-          set +e
-          git config --global --add safe.directory $GITHUB_WORKSPACE
+          set -euo pipefail
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
 
-          # Activate conda environment
-          source /opt/conda/etc/profile.d/conda.sh
-          conda activate testbed
-
-          # Install repo in editable mode (fast — deps already cached in image)
-          pip install -e . 2>/dev/null || python setup.py develop 2>/dev/null || true
-
-          # Run FAIL_TO_PASS and PASS_TO_PASS tests
-          if [ -f .swebench/run_script.sh ]; then
-            chmod +x .swebench/run_script.sh
-            bash .swebench/run_script.sh $TEST_FILES
-            TEST_EXIT=$?
-          else
-            pytest -rA $TEST_FILES
-            TEST_EXIT=$?
+      - name: Checkout Trigger Commit
+        shell: "bash -l {0}"
+        run: |
+          set -euo pipefail
+          if ! git cat-file -e "$BASE_COMMIT^{commit}" 2>/dev/null; then
+            git fetch --depth=1 "https://github.com/$REPO.git" "$BASE_COMMIT" || true
           fi
+          if ! git cat-file -e "$GITHUB_SHA^{commit}" 2>/dev/null; then
+            git fetch --depth=1 "https://github.com/$REPO.git" "$GITHUB_SHA" || true
+          fi
+          git checkout "$GITHUB_SHA"
 
-          echo "TEST_EXIT=$TEST_EXIT" >> "$GITHUB_ENV"
-          echo "test_exit=$TEST_EXIT" >> "$GITHUB_OUTPUT"
-          exit $TEST_EXIT
+      - name: Cache build artifacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            build/
+            **/*.so
+          key: build-${{ hashFiles('**/*.pyx', '**/*.c', '**/*.h') }}
+          restore-keys: build-
+
+      - name: Install Repo
+        shell: "bash -l {0}"
+        run: |
+          set -euo pipefail
+          source "$(conda info --base)/etc/profile.d/conda.sh"
+          conda activate "$CONDA_ENV"
+          git fetch --tags "https://github.com/$REPO.git" || true
+          TARGET_TIMESTAMP=$(git show -s --format=%ci "$BASE_COMMIT")
+          git tag -l | while read tag; do TAG_COMMIT=$(git rev-list -n 1 "$tag"); TAG_TIME=$(git show -s --format=%ci "$TAG_COMMIT"); if [[ "$TAG_TIME" > "$TARGET_TIMESTAMP" ]]; then git tag -d "$tag"; fi; done
+          python -m pip install -e .
+
+      - name: Apply Test Patch
+        shell: "bash -l {0}"
+        run: |
+          set -euo pipefail
+          git apply --verbose --reject - <<'PATCH_EOF'
+          diff --git a/xarray/tests/test_combine.py b/xarray/tests/test_combine.py
+          --- a/xarray/tests/test_combine.py
+          +++ b/xarray/tests/test_combine.py
+          @@ -581,6 +581,25 @@ def test_infer_order_from_coords(self):
+                   expected = data
+                   assert expected.broadcast_equals(actual)
+           
+          +    def test_combine_leaving_bystander_dimensions(self):
+          +        # Check non-monotonic bystander dimension coord doesn't raise
+          +        # ValueError on combine (https://github.com/pydata/xarray/issues/3150)
+          +        ycoord = ['a', 'c', 'b']
+          +
+          +        data = np.random.rand(7, 3)
+          +
+          +        ds1 = Dataset(data_vars=dict(data=(['x', 'y'], data[:3, :])),
+          +                      coords=dict(x=[1, 2, 3], y=ycoord))
+          +
+          +        ds2 = Dataset(data_vars=dict(data=(['x', 'y'], data[3:, :])),
+          +                      coords=dict(x=[4, 5, 6, 7], y=ycoord))
+          +
+          +        expected = Dataset(data_vars=dict(data=(['x', 'y'], data)),
+          +                           coords=dict(x=[1, 2, 3, 4, 5, 6, 7], y=ycoord))
+          +
+          +        actual = combine_by_coords((ds1, ds2))
+          +        assert_identical(expected, actual)
+          +
+               def test_combine_by_coords_previously_failed(self):
+                   # In the above scenario, one file is missing, containing the data for
+                   # one year's data for one variable.
+          PATCH_EOF
+
+      - name: Run Tests
+        shell: "bash -l {0}"
+        run: |
+          set -euo pipefail
+          source "$(conda info --base)/etc/profile.d/conda.sh"
+          conda activate "$CONDA_ENV"
+          FAIL_TO_PASS_PATH=/tmp/fail_to_pass.json
+          PASS_TO_PASS_PATH=/tmp/pass_to_pass.json
+          TEST_DIRECTIVES_PATH=/tmp/test_directives.json
+          TEST_RESULTS_PATH=/tmp/test_results.txt
+          cat <<'FAIL_EOF' > "$FAIL_TO_PASS_PATH"
+          ["xarray/tests/test_combine.py::TestCombineAuto::test_combine_leaving_bystander_dimensions"]
+          FAIL_EOF
+          cat <<'PASS_EOF' > "$PASS_TO_PASS_PATH"
+          ["xarray/tests/test_combine.py::TestTileIDsFromNestedList::test_1d", "xarray/tests/test_combine.py::TestTileIDsFromNestedList::test_2d", "xarray/tests/test_combine.py::TestTileIDsFromNestedList::test_3d", "xarray/tests/test_combine.py::TestTileIDsFromNestedList::test_single_dataset", "xarray/tests/test_combine.py::TestTileIDsFromNestedList::test_redundant_nesting", "xarray/tests/test_combine.py::TestTileIDsFromNestedList::test_ignore_empty_list", "xarray/tests/test_combine.py::TestTileIDsFromNestedList::test_uneven_depth_input", "xarray/tests/test_combine.py::TestTileIDsFromNestedList::test_uneven_length_input", "xarray/tests/test_combine.py::TestTileIDsFromNestedList::test_infer_from_datasets", "xarray/tests/test_combine.py::TestTileIDsFromCoords::test_1d", "xarray/tests/test_combine.py::TestTileIDsFromCoords::test_2d", "xarray/tests/test_combine.py::TestTileIDsFromCoords::test_no_dimension_coords", "xarray/tests/test_combine.py::TestTileIDsFromCoords::test_coord_not_monotonic", "xarray/tests/test_combine.py::TestTileIDsFromCoords::test_coord_monotonically_decreasing", "xarray/tests/test_combine.py::TestTileIDsFromCoords::test_no_concatenation_needed", "xarray/tests/test_combine.py::TestTileIDsFromCoords::test_2d_plus_bystander_dim", "xarray/tests/test_combine.py::TestTileIDsFromCoords::test_string_coords", "xarray/tests/test_combine.py::TestTileIDsFromCoords::test_lexicographic_sort_string_coords", "xarray/tests/test_combine.py::TestTileIDsFromCoords::test_datetime_coords", "xarray/tests/test_combine.py::TestNewTileIDs::test_new_tile_id[old_id0-new_id0]", "xarray/tests/test_combine.py::TestNewTileIDs::test_new_tile_id[old_id1-new_id1]", "xarray/tests/test_combine.py::TestNewTileIDs::test_new_tile_id[old_id2-new_id2]", "xarray/tests/test_combine.py::TestNewTileIDs::test_new_tile_id[old_id3-new_id3]", "xarray/tests/test_combine.py::TestNewTileIDs::test_new_tile_id[old_id4-new_id4]", "xarray/tests/test_combine.py::TestNewTileIDs::test_get_new_tile_ids", "xarray/tests/test_combine.py::TestCombineND::test_concat_once[dim1]", "xarray/tests/test_combine.py::TestCombineND::test_concat_once[new_dim]", "xarray/tests/test_combine.py::TestCombineND::test_concat_only_first_dim", "xarray/tests/test_combine.py::TestCombineND::test_concat_twice[dim1]", "xarray/tests/test_combine.py::TestCombineND::test_concat_twice[new_dim]", "xarray/tests/test_combine.py::TestCheckShapeTileIDs::test_check_depths", "xarray/tests/test_combine.py::TestCheckShapeTileIDs::test_check_lengths", "xarray/tests/test_combine.py::TestManualCombine::test_manual_concat", "xarray/tests/test_combine.py::TestManualCombine::test_empty_input", "xarray/tests/test_combine.py::TestManualCombine::test_manual_concat_along_new_dim", "xarray/tests/test_combine.py::TestManualCombine::test_manual_merge", "xarray/tests/test_combine.py::TestManualCombine::test_concat_multiple_dims", "xarray/tests/test_combine.py::TestManualCombine::test_concat_name_symmetry", "xarray/tests/test_combine.py::TestManualCombine::test_concat_one_dim_merge_another", "xarray/tests/test_combine.py::TestManualCombine::test_auto_combine_2d", "xarray/tests/test_combine.py::TestManualCombine::test_manual_combine_missing_data_new_dim", "xarray/tests/test_combine.py::TestManualCombine::test_invalid_hypercube_input", "xarray/tests/test_combine.py::TestManualCombine::test_merge_one_dim_concat_another", "xarray/tests/test_combine.py::TestManualCombine::test_combine_concat_over_redundant_nesting", "xarray/tests/test_combine.py::TestManualCombine::test_manual_combine_but_need_auto_combine", "xarray/tests/test_combine.py::TestManualCombine::test_combine_nested_fill_value[fill_value0]", "xarray/tests/test_combine.py::TestManualCombine::test_combine_nested_fill_value[2]", "xarray/tests/test_combine.py::TestManualCombine::test_combine_nested_fill_value[2.0]", "xarray/tests/test_combine.py::TestCombineAuto::test_combine_by_coords", "xarray/tests/test_combine.py::TestCombineAuto::test_infer_order_from_coords", "xarray/tests/test_combine.py::TestCombineAuto::test_combine_by_coords_previously_failed", "xarray/tests/test_combine.py::TestCombineAuto::test_combine_by_coords_still_fails", "xarray/tests/test_combine.py::TestCombineAuto::test_combine_by_coords_no_concat", "xarray/tests/test_combine.py::TestCombineAuto::test_check_for_impossible_ordering", "xarray/tests/test_combine.py::TestAutoCombineOldAPI::test_auto_combine", "xarray/tests/test_combine.py::TestAutoCombineOldAPI::test_auto_combine_previously_failed", "xarray/tests/test_combine.py::TestAutoCombineOldAPI::test_auto_combine_still_fails", "xarray/tests/test_combine.py::TestAutoCombineOldAPI::test_auto_combine_no_concat", "xarray/tests/test_combine.py::TestAutoCombineOldAPI::test_auto_combine_order_by_appearance_not_coords", "xarray/tests/test_combine.py::TestAutoCombineOldAPI::test_auto_combine_fill_value[fill_value0]", "xarray/tests/test_combine.py::TestAutoCombineOldAPI::test_auto_combine_fill_value[2]", "xarray/tests/test_combine.py::TestAutoCombineOldAPI::test_auto_combine_fill_value[2.0]", "xarray/tests/test_combine.py::TestAutoCombineDeprecation::test_auto_combine_with_concat_dim", "xarray/tests/test_combine.py::TestAutoCombineDeprecation::test_auto_combine_with_merge_and_concat", "xarray/tests/test_combine.py::TestAutoCombineDeprecation::test_auto_combine_with_coords", "xarray/tests/test_combine.py::TestAutoCombineDeprecation::test_auto_combine_without_coords"]
+          PASS_EOF
+          cat <<'DIR_EOF' > "$TEST_DIRECTIVES_PATH"
+          ["xarray/tests/test_combine.py"]
+          DIR_EOF
+          export FAIL_TO_PASS_PATH PASS_TO_PASS_PATH TEST_DIRECTIVES_PATH TEST_RESULTS_PATH
+          set +e
+          python -c 'import textwrap; code = "import json\nimport os\nimport re\nimport shlex\nimport subprocess\nimport sys\n\ndef _load(key):\n    path = os.environ.get(\"{}_PATH\".format(key))\n    if path and os.path.exists(path):\n        with open(path, \"r\", encoding=\"utf-8\") as handle:\n            raw = handle.read()\n    else:\n        raw = os.environ.get(key, \"[]\")\n    try:\n        return json.loads(raw)\n    except Exception:\n        return []\n\ntest_cmd = os.environ[\"TEST_CMD\"]\nresults_path = os.environ.get(\"TEST_RESULTS_PATH\", \"/tmp/test_results.txt\")\nlog_parts = []\n\ndef log(message):\n    print(message, flush=True)\n    log_parts.append(message + \"\\n\")\n\ndef run_tests(label, tests):\n    if not tests:\n        print(\"No tests for {}\".format(label))\n        return True\n    cmd = \" \".join([test_cmd] + [shlex.quote(t) for t in tests])\n    print(\"Running {}: {}\".format(label, cmd), flush=True)\n    result = subprocess.run(\n        cmd,\n        shell=True,\n        stdout=subprocess.PIPE,\n        stderr=subprocess.PIPE,\n        universal_newlines=True,\n    )\n    stdout = result.stdout or \"\"\n    stderr = result.stderr or \"\"\n    if stdout:\n        print(stdout, end=\"\" if stdout.endswith(\"\\n\") else \"\\n\")\n    if stderr:\n        print(stderr, end=\"\" if stderr.endswith(\"\\n\") else \"\\n\", file=sys.stderr)\n    if stdout:\n        log_parts.append(stdout)\n    if stderr:\n        log_parts.append(stderr)\n    return result.returncode == 0\n\ndef _as_list(value):\n    if isinstance(value, list):\n        return value\n    if isinstance(value, str):\n        return [value]\n    return []\n\ndef _has_unbalanced_brackets(value):\n    depth = 0\n    escaped = False\n    for ch in value:\n        if escaped:\n            escaped = False\n            continue\n        if ch == \"\\\\\":\n            escaped = True\n            continue\n        if ch == \"[\":\n            depth += 1\n        elif ch == \"]\":\n            depth -= 1\n            if depth < 0:\n                return True\n    return depth != 0\n\ndef _has_space_outside_brackets(value):\n    depth = 0\n    for ch in value:\n        if ch == \"[\":\n            depth += 1\n        elif ch == \"]\":\n            depth = max(depth - 1, 0)\n        elif ch.isspace() and depth == 0:\n            return True\n    return False\n\ndef _looks_like_test_id(value):\n    return any(x in value for x in (\"::\", \"/\", \".py\"))\n\ndef _merge_bracket_fragments(labels):\n    merged = []\n    buffer = None\n    for raw in labels:\n        if not isinstance(raw, str):\n            continue\n        value = raw.strip()\n        if not value:\n            continue\n        if buffer is not None:\n            if _looks_like_test_id(value):\n                log(\"Deferring bracket-fragmented test for repair: {}\".format(repr(buffer)))\n                merged.append(buffer)\n                buffer = None\n                # Treat current value as a new candidate.\n            else:\n                buffer = buffer + \" \" + value\n                if not _has_unbalanced_brackets(buffer):\n                    merged.append(buffer)\n                    buffer = None\n                continue\n        if _has_unbalanced_brackets(value):\n            buffer = value\n            continue\n        merged.append(value)\n    if buffer is not None:\n        log(\"Deferring bracket-fragmented test for repair: {}\".format(repr(buffer)))\n        merged.append(buffer)\n    return merged\n\ndef normalize_labels(labels):\n    labels = _as_list(labels)\n    normalized = []\n    for label in labels:\n        if not isinstance(label, str):\n            continue\n        value = label.strip()\n        if not value:\n            continue\n        m = re.match(r\"^([^\\s]+)\\s+\\(([^)]+)\\)$\", value)\n        if m:\n            test_name, path = m.group(1), m.group(2).strip()\n            if re.search(r\"[\\\\/]\", path) or path.endswith(\".py\"):\n                normalized.append(\"{}::{}\".format(path, test_name))\n            else:\n                normalized.append(\"{}.{}\".format(path, test_name))\n        else:\n            normalized.append(value)\n    return normalized\n\ndef prefilter_tests(label, tests):\n    tests = _merge_bracket_fragments(_as_list(tests))\n    valid = []\n    skipped = []\n    for test in tests:\n        if not isinstance(test, str):\n            continue\n        value = test.strip()\n        if not value:\n            continue\n        if _has_unbalanced_brackets(value):\n            repaired = value + \"]\"\n            if not _has_unbalanced_brackets(repaired) and not _has_space_outside_brackets(repaired):\n                log(\"Repairing unbalanced brackets for {}: {} -> {}\".format(label, repr(value), repr(repaired)))\n                value = repaired\n            else:\n                fallback = value.split(\"[\", 1)[0].strip() if \"[\" in value else \"\"\n                if fallback and not _has_space_outside_brackets(fallback):\n                    log(\"Falling back to parent test for {}: {} -> {}\".format(label, repr(value), repr(fallback)))\n                    value = fallback\n                else:\n                    skipped.append(value)\n                    continue\n        if _has_space_outside_brackets(value):\n            skipped.append(value)\n            continue\n        valid.append(value)\n    if skipped:\n        skipped_str = \", \".join(repr(x) for x in skipped)\n        log(\"Skipping {} non-test entries: {}\".format(label, skipped_str))\n    return valid\n\ndef looks_qualified(labels):\n    return any(isinstance(l, str) and any(x in l for x in (\"::\", \"/\", \".\")) for l in labels)\n\nfail_to_pass = prefilter_tests(\n    \"FAIL_TO_PASS\",\n    normalize_labels(_load(\"FAIL_TO_PASS\")),\n)\npass_to_pass = prefilter_tests(\n    \"PASS_TO_PASS\",\n    normalize_labels(_load(\"PASS_TO_PASS\")),\n)\ntest_directives = prefilter_tests(\"TEST_DIRECTIVES\", _load(\"TEST_DIRECTIVES\"))\n\nuse_fail_pass = (fail_to_pass or pass_to_pass) and (\n    \"pytest\" in test_cmd or \"py.test\" in test_cmd or looks_qualified(fail_to_pass + pass_to_pass)\n)\n\nexit_code = 0\ntry:\n    if use_fail_pass:\n        if not run_tests(\"FAIL_TO_PASS\", fail_to_pass):\n            exit_code = 1\n        elif not run_tests(\"PASS_TO_PASS\", pass_to_pass):\n            exit_code = 1\n    else:\n        if not run_tests(\"TEST_DIRECTIVES\", test_directives):\n            exit_code = 1\nfinally:\n    try:\n        with open(results_path, \"w\", encoding=\"utf-8\") as handle:\n            handle.write(\"\".join(log_parts))\n    except Exception as exc:\n        print(\"Failed to write test results:\", exc)\nsys.exit(exit_code)"; exec(textwrap.dedent(code))'
+          TEST_EXIT=$?
+          echo "TEST_EXIT=$TEST_EXIT"
+          export TEST_EXIT
+          python -c 'import textwrap; code = "import json\nimport os\nimport sys\nimport urllib.request\n\nurl = os.environ.get(\n    \"WEBHOOK_URL\",\n    \"https://aicodinggym.com/api/webhooks/github\",\n)\ncommit_id = os.environ.get(\"GITHUB_SHA\", \"\")\nbranch_name = os.environ.get(\"GITHUB_REF_NAME\", \"\")\ntest_exit = int(os.environ.get(\"TEST_EXIT\", \"1\"))\nstatus = \"COMPLETED\" if test_exit == 0 else \"FAILED\"\npassed = test_exit == 0\npassed_tests = 1 if passed else 0\ntotal_tests = 1\nfailed_tests = 0 if passed else 1\nresults_path = os.environ.get(\"TEST_RESULTS_PATH\", \"/tmp/test_results.txt\")\ndetails = \"\"\nif os.path.exists(results_path):\n    try:\n        with open(results_path, \"r\", encoding=\"utf-8\") as handle:\n            details = handle.read()\n    except Exception as exc:\n        print(\"Webhook: failed to load test logs:\", exc)\n\nif not url or not commit_id or not branch_name:\n    print(\"Webhook: missing url/commit/branch; skipping.\")\n    sys.exit(0)\npayload = {\n    \"commit_id\": commit_id,\n    \"branch_name\": branch_name,\n    \"status\": status,\n    \"passed\": passed,\n    \"passed_tests\": passed_tests,\n    \"total_tests\": total_tests,\n    \"failed_tests\": failed_tests,\n    \"details\": details,\n}\ndata = json.dumps(payload).encode(\"utf-8\")\nreq = urllib.request.Request(\n    url, data=data,\n    headers={\"Content-Type\": \"application/json\"},\n    method=\"POST\",\n)\ntry:\n    with urllib.request.urlopen(req, timeout=10) as resp:\n        body = resp.read().decode(\"utf-8\")\n        print(\"Webhook response:\", body)\nexcept Exception as exc:\n    print(\"Webhook failed:\", exc)"; exec(textwrap.dedent(code))'
+          exit "$TEST_EXIT"
