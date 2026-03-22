@@ -29,10 +29,10 @@ RUN git clone --depth 1 https://github.com/matplotlib/matplotlib.git . && \
 # Install repo (exact commands from original workflow)
 SHELL ["/bin/bash", "-c"]
 RUN source activate testbed && \
-    sudo apt-get -y update && sudo apt-get -y upgrade && DEBIAN_FRONTEND=noninteractive sudo apt-get install -y imagemagick ffmpeg texlive texlive-latex-extra texlive-fonts-recommended texlive-xetex texlive-luatex cm-super dvipng && \
+    apt-get -y update && apt-get -y upgrade && DEBIAN_FRONTEND=noninteractive apt-get install -y imagemagick ffmpeg texlive texlive-latex-extra texlive-fonts-recommended texlive-xetex texlive-luatex cm-super dvipng && \
     QHULL_URL="http://www.qhull.org/download/qhull-2020-src-8.0.2.tgz" && \
     QHULL_TAR="/tmp/qhull-2020-src-8.0.2.tgz" && \
-    QHULL_BUILD_DIR="$GITHUB_WORKSPACE/build" && \
+    QHULL_BUILD_DIR="/app/build" && \
     wget -O "$QHULL_TAR" "$QHULL_URL" && \
     mkdir -p "$QHULL_BUILD_DIR" && \
     tar -xvzf "$QHULL_TAR" -C "$QHULL_BUILD_DIR" && \
