@@ -91,6 +91,7 @@ jobs:
           set -euo pipefail
           source "$(conda info --base)/etc/profile.d/conda.sh"
           conda activate "$CONDA_ENV"
+          cd /app
           FAIL_TO_PASS_PATH=/tmp/fail_to_pass.json
           PASS_TO_PASS_PATH=/tmp/pass_to_pass.json
           TEST_DIRECTIVES_PATH=/tmp/test_directives.json
