@@ -3,8 +3,10 @@ set -e
 
 # Copy compiled artifacts (.so, _version.py) from Docker's /app to workspace
 if [ -d /app ] && [ ! -L /app ]; then
-  find /app -name "*.so" -exec cp --parents {} "$(pwd)/" \; 2>/dev/null || true
-  find /app -name "_version.py" -exec cp --parents {} "$(pwd)/" \; 2>/dev/null || true
+  cd /app
+  find . -name "*.so" -exec cp --parents {} "$OLDPWD/" \; 2>/dev/null || true
+  find . -name "_version.py" -exec cp --parents {} "$OLDPWD/" \; 2>/dev/null || true
+  cd "$OLDPWD"
   # Symlink /app to workspace so editable install paths resolve correctly
   rm -rf /app
   ln -sf "$(pwd)" /app
