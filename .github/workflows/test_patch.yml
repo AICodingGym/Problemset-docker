@@ -46,6 +46,7 @@ jobs:
 
       - name: Run Tests
         shell: "bash -l {0}"
+        working-directory: /app
         run: |
           set -euo pipefail
           source "$(conda info --base)/etc/profile.d/conda.sh"
