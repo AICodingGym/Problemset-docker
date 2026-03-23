@@ -1,13 +1,22 @@
 #!/bin/bash
-
 set -e
 
-curl micro.mamba.pm/install.sh | bash
+# Copy compiled artifacts (.so, _version.py) from Docker's /app to workspace
+if [ -d /app ] && [ ! -L /app ]; then
+  find /app -name "*.so" -exec cp --parents {} "$(pwd)/" \; 2>/dev/null || true
+  find /app -name "_version.py" -exec cp --parents {} "$(pwd)/" \; 2>/dev/null || true
+  # Symlink /app to workspace so editable install paths resolve correctly
+  rm -rf /app
+  ln -sf "$(pwd)" /app
+fi
 
-conda init --all
-micromamba shell init -s bash
-micromamba env create -f environment.yml --yes
-# Note that `micromamba activate mpl-dev` doesn't work, it must be run by the
-# user (same applies to `conda activate`)
-echo "envs_dirs:
-  - /home/codespace/micromamba/envs" > /opt/conda/.condarc
+# Activate conda environment
+source "$(conda info --base)/etc/profile.d/conda.sh"
+conda activate testbed
+
+# Install AI coding CLI tools
+pip install aicodinggym-cli || true
+npm install -g @anthropic-ai/claude-code @openai/codex 2>/dev/null || true
+
+echo ""
+echo "=== Environment ready! ==="
