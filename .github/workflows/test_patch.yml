@@ -27,36 +27,18 @@ jobs:
       - name: Fetch code into /app
         run: |
           cd /app
+          git config --global --add safe.directory /app
           git remote set-url origin https://github.com/${{ github.repository }}
           git fetch origin ${{ github.sha }} --depth=1
           git checkout ${{ github.sha }}
 
-      - name: Git Safe Directory
-        shell: "bash -l {0}"
-        run: |
-          set -euo pipefail
-          git config --global --add safe.directory "$GITHUB_WORKSPACE"
-
-      - name: Checkout Trigger Commit
-        shell: "bash -l {0}"
-        run: |
-          set -euo pipefail
-          if ! git cat-file -e "$BASE_COMMIT^{commit}" 2>/dev/null; then
-            git fetch --depth=1 "https://github.com/$REPO.git" "$BASE_COMMIT" || true
-          fi
-          if ! git cat-file -e "$GITHUB_SHA^{commit}" 2>/dev/null; then
-            git fetch --depth=1 "https://github.com/$REPO.git" "$GITHUB_SHA" || true
-          fi
-          git checkout "$GITHUB_SHA"
-
-      - name: Generate patch
+      - name: Generate and apply patch
         shell: "bash -l {0}"
         run: |
           set -euo pipefail
           source "$(conda info --base)/etc/profile.d/conda.sh"
           conda activate "$CONDA_ENV"
           cd /app
-          git config --global --add safe.directory /app
           git diff $BASE_COMMIT HEAD -- ':!.swebench' ':!.github' ':!.devcontainer' ':!.vscode' ':!submit.sh' ':!.gitignore' ':!problem_statement.md' ':!hints_text.md' ':!CLAUDE.md' ':!AGENTS.md' ':!.claudeignore' ':!.copilotignore' ':!.cursorignore' ':!.cursorrules' > /tmp/patch.diff || true
           echo "Patch size: $(wc -c < /tmp/patch.diff) bytes"
           git reset --hard $BASE_COMMIT
@@ -110,6 +92,7 @@ jobs:
           +    sfs.fit(X, y)
           PATCH_EOF
 
+      - name: Run Tests
       - name: Run Tests
         shell: "bash -l {0}"
         run: |
