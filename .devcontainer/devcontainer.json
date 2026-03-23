@@ -1,0 +1,23 @@
+{
+  "name": "SWE-bench: instance_protonmail__webclients-0200ce0fc1d4dbd35178c10d440a284c82ecc858",
+  "image": "ghcr.io/aicodinggym/problemset-docker/webclients-0200:latest",
+  "postCreateCommand": "bash .devcontainer/setup.sh",
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "GitHub.copilot",
+        "GitHub.copilot-chat",
+        "anthropic.claude-code",
+        "openai.codex"
+      ],
+      "settings": {
+        "files.exclude": {
+          ".swebench": true,
+          ".devcontainer": true,
+          ".github": true,
+          ".gitignore": true
+        }
+      }
+    }
+  }
+}
