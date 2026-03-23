@@ -24,7 +24,8 @@ RUN mkdir -p /app
 WORKDIR /app
 RUN git clone --depth 1 https://github.com/matplotlib/matplotlib.git . && \
     git fetch --depth 1 origin 0849036fd992a2dd133a0cffc3f84f58ccf1840f && \
-    git checkout 0849036fd992a2dd133a0cffc3f84f58ccf1840f
+    git checkout 0849036fd992a2dd133a0cffc3f84f58ccf1840f && \
+    git fetch --depth 1 origin 5ca694b38d861c0e24cd8743753427dda839b90b
 
 # Install repo (exact commands from original workflow)
 SHELL ["/bin/bash", "-c"]
@@ -40,7 +41,7 @@ RUN source activate testbed && \
     python -m pip install -e .
 
 # Reset to base commit (code will be patched at runtime)
-RUN git checkout 5ca694b38d861c0e24cd8743753427dda839b90b || true
+RUN git checkout 5ca694b38d861c0e24cd8743753427dda839b90b
 
 
 CMD ["bash"]
