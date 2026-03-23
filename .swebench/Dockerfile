@@ -27,6 +27,9 @@ RUN git clone --depth 1 https://github.com/matplotlib/matplotlib.git . && \
     git checkout 0849036fd992a2dd133a0cffc3f84f58ccf1840f && \
     git fetch --depth 1 origin 5ca694b38d861c0e24cd8743753427dda839b90b
 
+# Reset to base commit BEFORE install (so .so files match BASE_COMMIT code)
+RUN git checkout 5ca694b38d861c0e24cd8743753427dda839b90b
+
 # Install repo (exact commands from original workflow)
 SHELL ["/bin/bash", "-c"]
 RUN source activate testbed && \
@@ -39,9 +42,6 @@ RUN source activate testbed && \
     tar -xvzf "$QHULL_TAR" -C "$QHULL_BUILD_DIR" && \
     export SETUPTOOLS_SCM_PRETEND_VERSION=0.0.0 && \
     python -m pip install -e .
-
-# Reset to base commit (code will be patched at runtime)
-RUN git checkout 5ca694b38d861c0e24cd8743753427dda839b90b
 
 
 CMD ["bash"]
