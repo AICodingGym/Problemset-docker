@@ -1,0 +1,23 @@
+{
+  "name": "SWE-bench: instance_flipt-io__flipt-c154dd1a3590954dfd3b901555fc6267f646a289",
+  "image": "ghcr.io/aicodinggym/problemset-docker/flipt-c154:latest",
+  "postCreateCommand": "bash .devcontainer/setup.sh",
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "GitHub.copilot",
+        "GitHub.copilot-chat",
+        "anthropic.claude-code",
+        "openai.codex"
+      ],
+      "settings": {
+        "files.exclude": {
+          ".swebench": true,
+          ".devcontainer": true,
+          ".github": true,
+          ".gitignore": true
+        }
+      }
+    }
+  }
+}
