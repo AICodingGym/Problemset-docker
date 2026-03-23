@@ -34,7 +34,7 @@ RUN git checkout 422685d0bdc110547535036c1ff398b5e1c44145
 SHELL ["/bin/bash", "-c"]
 RUN source activate testbed && \
     export SETUPTOOLS_SCM_PRETEND_VERSION="6.0.0" && \
-    export SETUPTOOLS_SCM_PRETEND_VERSION=0.0.0 && \
+    export SETUPTOOLS_SCM_PRETEND_VERSION=99.0.0 && \
     python -m pip install -e .
 
 
