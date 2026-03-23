@@ -1,0 +1,23 @@
+{
+  "name": "SWE-bench: instance_NodeBB__NodeBB-6ea3b51f128dd270281db576a1b59270d5e45db0-vnan",
+  "image": "ghcr.io/aicodinggym/problemset-docker/NodeBB-6ea3:latest",
+  "postCreateCommand": "bash .devcontainer/setup.sh",
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "GitHub.copilot",
+        "GitHub.copilot-chat",
+        "anthropic.claude-code",
+        "openai.codex"
+      ],
+      "settings": {
+        "files.exclude": {
+          ".swebench": true,
+          ".devcontainer": true,
+          ".github": true,
+          ".gitignore": true
+        }
+      }
+    }
+  }
+}
