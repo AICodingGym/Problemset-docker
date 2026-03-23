@@ -1,17 +1,24 @@
 {
-    "name": "AstroPy",
-    "image": "mcr.microsoft.com/devcontainers/miniconda:0-3",
-    "onCreateCommand": "conda init bash && sudo cp .devcontainer/welcome-message.txt /usr/local/etc/vscode-dev-containers/first-run-notice.txt",
-    "postCreateCommand": "git fetch --tag && pip install tox && pip install -e .[all,test_all,docs]",
-    "waitFor": "postCreateCommand",
-    "customizations": {
-        "vscode": {
-            "extensions": [
-                "ms-python.python",
-                "ms-python.black-formatter",
-                "charliermarsh.ruff",
-                "stkb.rewrap"
-            ]
+  "name": "SWE-bench: astropy__astropy-14598",
+  "image": "ghcr.io/aicodinggym/problemset-docker/astropy-14598:latest",
+  "postCreateCommand": "bash .devcontainer/setup.sh",
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "ms-python.python",
+        "GitHub.copilot",
+        "GitHub.copilot-chat",
+        "anthropic.claude-code",
+        "openai.codex"
+      ],
+      "settings": {
+        "files.exclude": {
+          ".swebench": true,
+          ".devcontainer": true,
+          ".github": true,
+          ".gitignore": true
         }
+      }
     }
+  }
 }
