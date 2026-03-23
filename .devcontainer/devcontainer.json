@@ -1,0 +1,23 @@
+{
+  "name": "SWE-bench: instance_future-architect__vuls-abd80417728b16c6502067914d27989ee575f0ee",
+  "image": "ghcr.io/aicodinggym/problemset-docker/vuls-abd8:latest",
+  "postCreateCommand": "bash .devcontainer/setup.sh",
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "GitHub.copilot",
+        "GitHub.copilot-chat",
+        "anthropic.claude-code",
+        "openai.codex"
+      ],
+      "settings": {
+        "files.exclude": {
+          ".swebench": true,
+          ".devcontainer": true,
+          ".github": true,
+          ".gitignore": true
+        }
+      }
+    }
+  }
+}
