@@ -27,13 +27,13 @@ RUN git clone --depth 1 https://github.com/psf/requests.git . && \
     git checkout 091991be0da19de9108dbe5e3752917fea3d7fdc && \
     git fetch --depth 1 origin 091991be0da19de9108dbe5e3752917fea3d7fdc
 
+# Reset to base commit BEFORE install (so .so files match BASE_COMMIT code)
+RUN git checkout 091991be0da19de9108dbe5e3752917fea3d7fdc
+
 # Install repo (exact commands from original workflow)
 SHELL ["/bin/bash", "-c"]
 RUN source activate testbed && \
     python -m pip install .
-
-# Reset to base commit (code will be patched at runtime)
-RUN git checkout 091991be0da19de9108dbe5e3752917fea3d7fdc
 
 
 CMD ["bash"]
