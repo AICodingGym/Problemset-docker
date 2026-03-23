@@ -1,0 +1,23 @@
+{
+  "name": "SWE-bench: instance_internetarchive__openlibrary-c12943be1db80cf1114bc267ddf4f9933aca9b28-v2c55207218fb8a0138425cbf7d9675272e240b90",
+  "image": "ghcr.io/aicodinggym/problemset-docker/openlibrary-c129:latest",
+  "postCreateCommand": "bash .devcontainer/setup.sh",
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "GitHub.copilot",
+        "GitHub.copilot-chat",
+        "anthropic.claude-code",
+        "openai.codex"
+      ],
+      "settings": {
+        "files.exclude": {
+          ".swebench": true,
+          ".devcontainer": true,
+          ".github": true,
+          ".gitignore": true
+        }
+      }
+    }
+  }
+}
