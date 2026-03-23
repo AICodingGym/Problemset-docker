@@ -5,10 +5,6 @@ on:
   pull_request:
   workflow_dispatch:
 
-permissions:
-  contents: read
-  packages: read
-
 jobs:
   test:
     runs-on: ubuntu-22.04
@@ -28,53 +24,29 @@ jobs:
       TEST_FILES: 'testing/logging/test_fixture.py'
       CONDA_ENV: "testbed"
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 1
-          fetch-tags: false
-
-      - name: Git Safe Directory
-        shell: "bash -l {0}"
+      - name: Fetch code into /app
         run: |
-          set -euo pipefail
-          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          cd /app
+          git config --global --add safe.directory /app
+          git remote set-url origin https://github.com/${{ github.repository }}
+          git fetch origin ${{ github.sha }} --depth=1
+          git checkout ${{ github.sha }}
 
-      - name: Checkout Trigger Commit
-        shell: "bash -l {0}"
-        run: |
-          set -euo pipefail
-          if ! git cat-file -e "$BASE_COMMIT^{commit}" 2>/dev/null; then
-            git fetch --depth=1 "https://github.com/$REPO.git" "$BASE_COMMIT" || true
-          fi
-          if ! git cat-file -e "$GITHUB_SHA^{commit}" 2>/dev/null; then
-            git fetch --depth=1 "https://github.com/$REPO.git" "$GITHUB_SHA" || true
-          fi
-          git checkout "$GITHUB_SHA"
-
-      - name: Cache build artifacts
-        uses: actions/cache@v4
-        with:
-          path: |
-            build/
-            **/*.so
-          key: build-${{ hashFiles('**/*.pyx', '**/*.c', '**/*.h') }}
-          restore-keys: build-
-
-      - name: Install Repo
+      - name: Generate and apply patch
         shell: "bash -l {0}"
         run: |
           set -euo pipefail
           source "$(conda info --base)/etc/profile.d/conda.sh"
           conda activate "$CONDA_ENV"
-          git fetch --tags "https://github.com/$REPO.git" || true
-          TARGET_TIMESTAMP=$(git show -s --format=%ci "$BASE_COMMIT")
-          git tag -l | while read tag; do TAG_COMMIT=$(git rev-list -n 1 "$tag"); TAG_TIME=$(git show -s --format=%ci "$TAG_COMMIT"); if [[ "$TAG_TIME" > "$TARGET_TIMESTAMP" ]]; then git tag -d "$tag"; fi; done
-          export SETUPTOOLS_SCM_PRETEND_VERSION="7.2.0"
-          python -m pip install -e .
+          cd /app
+          git diff $BASE_COMMIT HEAD -- ':!.swebench' ':!.github' ':!.devcontainer' ':!.vscode' ':!submit.sh' ':!.gitignore' ':!problem_statement.md' ':!hints_text.md' ':!CLAUDE.md' ':!AGENTS.md' ':!.claudeignore' ':!.copilotignore' ':!.cursorignore' ':!.cursorrules' > /tmp/patch.diff || true
+          echo "Patch size: $(wc -c < /tmp/patch.diff) bytes"
+          git reset --hard $BASE_COMMIT
+          git apply -v /tmp/patch.diff || echo "No code patch to apply"
 
       - name: Apply Test Patch
         shell: "bash -l {0}"
+        working-directory: /app
         run: |
           set -euo pipefail
           git apply --verbose --reject - <<'PATCH_EOF'
@@ -110,6 +82,7 @@ jobs:
 
       - name: Run Tests
         shell: "bash -l {0}"
+        working-directory: /app
         run: |
           set -euo pipefail
           source "$(conda info --base)/etc/profile.d/conda.sh"
