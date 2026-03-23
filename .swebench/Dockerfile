@@ -24,7 +24,8 @@ RUN mkdir -p /app
 WORKDIR /app
 RUN git clone --depth 1 https://github.com/scikit-learn/scikit-learn.git . && \
     git fetch --depth 1 origin 1e8a5b833d1b58f3ab84099c4582239af854b23a && \
-    git checkout 1e8a5b833d1b58f3ab84099c4582239af854b23a
+    git checkout 1e8a5b833d1b58f3ab84099c4582239af854b23a && \
+    git fetch --depth 1 origin 10dbc142bd17ccf7bd38eec2ac04b52ce0d1009e
 
 # Install repo (exact commands from original workflow)
 SHELL ["/bin/bash", "-c"]
@@ -33,7 +34,7 @@ RUN source activate testbed && \
     python -m pip install -v --no-use-pep517 --no-build-isolation -e .
 
 # Reset to base commit (code will be patched at runtime)
-RUN git checkout 10dbc142bd17ccf7bd38eec2ac04b52ce0d1009e || true
+RUN git checkout 10dbc142bd17ccf7bd38eec2ac04b52ce0d1009e
 
 
 CMD ["bash"]
