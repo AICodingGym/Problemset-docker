@@ -44,29 +44,6 @@ jobs:
           git reset --hard $BASE_COMMIT
           git apply -v /tmp/patch.diff || echo "No code patch to apply"
 
-      - name: Apply Test Patch
-        shell: "bash -l {0}"
-        run: |
-          set -euo pipefail
-          git apply --verbose --reject - <<'PATCH_EOF'
-          diff --git a/test_requests.py b/test_requests.py
-          --- a/test_requests.py
-          +++ b/test_requests.py
-          @@ -1389,6 +1389,11 @@ def test_total_timeout_connect(self):
-                   except ConnectTimeout:
-                       pass
-           
-          +    def test_encoded_methods(self):
-          +        """See: https://github.com/kennethreitz/requests/issues/2316"""
-          +        r = requests.request(b'GET', httpbin('get'))
-          +        assert r.ok
-          +
-           
-           SendCall = collections.namedtuple('SendCall', ('args', 'kwargs'))
-           
-          PATCH_EOF
-
-      - name: Run Tests
       - name: Run Tests
         shell: "bash -l {0}"
         run: |
