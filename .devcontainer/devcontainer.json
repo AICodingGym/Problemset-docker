@@ -1,0 +1,23 @@
+{
+  "name": "SWE-bench: instance_gravitational__teleport-007235446f85b1cbaef92664c3b3867517250f21",
+  "image": "ghcr.io/aicodinggym/problemset-docker/teleport-0072:latest",
+  "postCreateCommand": "bash .devcontainer/setup.sh",
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "GitHub.copilot",
+        "GitHub.copilot-chat",
+        "anthropic.claude-code",
+        "openai.codex"
+      ],
+      "settings": {
+        "files.exclude": {
+          ".swebench": true,
+          ".devcontainer": true,
+          ".github": true,
+          ".gitignore": true
+        }
+      }
+    }
+  }
+}
