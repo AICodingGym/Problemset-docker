@@ -8,6 +8,11 @@ on:
 jobs:
   test:
     runs-on: ubuntu-22.04
+    container:
+      image: ghcr.io/aicodinggym/problemset-docker/${{ github.ref_name }}:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
     timeout-minutes: 240
     env:
       INSTANCE_ID: "sphinx-doc__sphinx-10449"
@@ -19,141 +24,29 @@ jobs:
       TEST_FILES: 'tests/test_ext_autodoc_configs.py'
       CONDA_ENV: "testbed"
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 1
-          fetch-tags: false
-
-      - name: Setup Miniconda
-        uses: conda-incubator/setup-miniconda@v3
-        with:
-          auto-activate-base: false
-          miniforge-variant: Miniforge3
-          python-version: "3.9"
-
-
-      - name: Cache conda environment
-        uses: actions/cache@v4
-        with:
-          path: |
-            ${{ env.CONDA }}/envs
-          key: conda-${{ runner.os }}-${{ hashFiles('.github/workflows/test_patch.yml') }}
-
-      - name: Git Safe Directory
-        shell: "bash -l {0}"
+      - name: Fetch code into /app
         run: |
-          set -euo pipefail
-          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          cd /app
+          git config --global --add safe.directory /app
+          git remote set-url origin https://github.com/${{ github.repository }}
+          git fetch origin ${{ github.sha }} --depth=1
+          git checkout ${{ github.sha }}
 
-      - name: Create Conda Environment
-        shell: "bash -l {0}"
-        run: |
-          set -euo pipefail
-          source "$(conda info --base)/etc/profile.d/conda.sh"
-          if [ "$ENV_SETUP_COMMIT" != "$BASE_COMMIT" ]; then
-            if ! git cat-file -e "$ENV_SETUP_COMMIT^{commit}" 2>/dev/null; then
-              echo "ENV_SETUP_COMMIT not found locally, fetching from upstream..."
-              git fetch --depth=1 "https://github.com/$REPO.git" "$ENV_SETUP_COMMIT" || true
-            fi
-            if git cat-file -e "$ENV_SETUP_COMMIT^{commit}" 2>/dev/null; then
-              git checkout "$ENV_SETUP_COMMIT"
-            else
-              echo "ENV_SETUP_COMMIT still missing; skipping checkout"
-            fi
-          fi
-          cat <<'ENV_EOF' > /tmp/environment.yml
-          name: testbed
-          channels:
-            - defaults
-            - conda-forge
-          dependencies:
-            - _libgcc_mutex=0.1=main
-            - _openmp_mutex=5.1=1_gnu
-            - ca-certificates=2024.9.24=h06a4308_0
-            - ld_impl_linux-64=2.40=h12ee557_0
-            - libffi=3.4.4=h6a678d5_1
-            - libgcc-ng=11.2.0=h1234567_1
-            - libgomp=11.2.0=h1234567_1
-            - libstdcxx-ng=11.2.0=h1234567_1
-            - ncurses=6.4=h6a678d5_0
-            - openssl=3.0.15=h5eee18b_0
-            - pip=24.2=py39h06a4308_0
-            - python=3.9.20=he870216_1
-            - readline=8.2=h5eee18b_0
-            - setuptools=75.1.0=py39h06a4308_0
-            - sqlite=3.45.3=h5eee18b_0
-            - tk=8.6.14=h39e8969_0
-            - tzdata=2024b=h04d1e81_0
-            - wheel=0.44.0=py39h06a4308_0
-            - xz=5.4.6=h5eee18b_1
-            - zlib=1.2.13=h5eee18b_1
-            - pip:
-                - alabaster==0.7.16
-                - babel==2.16.0
-                - cachetools==5.5.0
-                - certifi==2024.8.30
-                - chardet==5.2.0
-                - charset-normalizer==3.4.0
-                - colorama==0.4.6
-                - cython==3.0.11
-                - distlib==0.3.9
-                - docutils==0.18.1
-                - exceptiongroup==1.2.2
-                - filelock==3.16.1
-                - html5lib==1.1
-                - idna==3.10
-                - imagesize==1.4.1
-                - importlib-metadata==8.5.0
-                - iniconfig==2.0.0
-                - jinja2==3.1.4
-                - markupsafe==3.0.2
-                - packaging==24.1
-                - platformdirs==4.3.6
-                - pluggy==1.5.0
-                - pygments==2.18.0
-                - pyproject-api==1.8.0
-                - pytest==8.3.3
-                - requests==2.32.3
-                - six==1.16.0
-                - snowballstemmer==2.2.0
-                - tomli==2.0.2
-                - tox==4.16.0
-                - tox-current-env==0.0.11
-                - urllib3==2.2.3
-                - virtualenv==20.26.6
-                - webencodings==0.5.1
-                - zipp==3.20.2
-          ENV_EOF
-          conda env create --file /tmp/environment.yml
-          conda activate "$CONDA_ENV"
-          rm /tmp/environment.yml
-          python -m pip install tox==4.16.0 tox-current-env==0.0.11 Jinja2==3.0.3
-
-      - name: Checkout Trigger Commit
-        shell: "bash -l {0}"
-        run: |
-          set -euo pipefail
-          if ! git cat-file -e "$BASE_COMMIT^{commit}" 2>/dev/null; then
-            git fetch --depth=1 "https://github.com/$REPO.git" "$BASE_COMMIT" || true
-          fi
-          if ! git cat-file -e "$GITHUB_SHA^{commit}" 2>/dev/null; then
-            git fetch --depth=1 "https://github.com/$REPO.git" "$GITHUB_SHA" || true
-          fi
-          git checkout "$GITHUB_SHA"
-
-      - name: Install Repo
+      - name: Generate and apply patch
         shell: "bash -l {0}"
         run: |
           set -euo pipefail
           source "$(conda info --base)/etc/profile.d/conda.sh"
           conda activate "$CONDA_ENV"
-          sed -i 's/pytest/pytest -rA/' tox.ini
-          export SETUPTOOLS_SCM_PRETEND_VERSION=0.0.0
-          python -m pip install -e .[test]
+          cd /app
+          git diff $BASE_COMMIT HEAD -- ':!.swebench' ':!.github' ':!.devcontainer' ':!.vscode' ':!submit.sh' ':!.gitignore' ':!problem_statement.md' ':!hints_text.md' ':!CLAUDE.md' ':!AGENTS.md' ':!.claudeignore' ':!.copilotignore' ':!.cursorignore' ':!.cursorrules' > /tmp/patch.diff || true
+          echo "Patch size: $(wc -c < /tmp/patch.diff) bytes"
+          git reset --hard $BASE_COMMIT
+          git apply -v /tmp/patch.diff || echo "No code patch to apply"
 
       - name: Apply Test Patch
         shell: "bash -l {0}"
+        working-directory: /app
         run: |
           set -euo pipefail
           git apply --verbose --reject - <<'PATCH_EOF'
@@ -174,6 +67,7 @@ jobs:
 
       - name: Run Tests
         shell: "bash -l {0}"
+        working-directory: /app
         run: |
           set -euo pipefail
           source "$(conda info --base)/etc/profile.d/conda.sh"
