@@ -1,0 +1,23 @@
+{
+  "name": "SWE-bench: instance_element-hq__element-web-53b42e321777a598aaf2bb3eab22d710569f83a8-vnan",
+  "image": "ghcr.io/aicodinggym/problemset-docker/element-web-53b4:latest",
+  "postCreateCommand": "bash .devcontainer/setup.sh",
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "GitHub.copilot",
+        "GitHub.copilot-chat",
+        "anthropic.claude-code",
+        "openai.codex"
+      ],
+      "settings": {
+        "files.exclude": {
+          ".swebench": true,
+          ".devcontainer": true,
+          ".github": true,
+          ".gitignore": true
+        }
+      }
+    }
+  }
+}
